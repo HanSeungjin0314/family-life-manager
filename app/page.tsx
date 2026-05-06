@@ -47,7 +47,9 @@ type FixedExpense = {
 type Task = { id: string; group_id: string; title: string; assigned_to_member_id: string | null; due_date: string | null; repeat_type: string; is_done: boolean; memo: string | null };
 type ShoppingItem = { id: string; group_id: string; item_name: string; quantity: string | null; added_by_member_id: string | null; is_done: boolean; memo: string | null };
 type Goal = { id: string; group_id: string; title: string; target_amount: number; current_amount: number; target_date: string | null; memo: string | null };
-type CalendarEvent = { id: string; group_id: string; title: string; event_date: string; event_time: string | null; assigned_to_member_id: string | null; repeat_type: string; is_done: boolean; memo: string | null };
+type CalendarEvent = { id: string; group_id: string; title: string; event_date: string; event_time: string | null; assigned_to_member_id: string | null; event_type: string; repeat_type: string; is_done: boolean; is_important: boolean; memo: string | null };
+type AnniversaryEvent = { id: string; group_id: string; title: string; anniversary_date: string; calendar_type: string; repeat_type: string; member_id: string | null; memo: string | null };
+type DiaryEntry = { id: string; group_id: string; author_member_id: string | null; diary_date: string; title: string; mood: string | null; content: string; visibility: string; created_at?: string };
 type SettlementRecord = { id: string; group_id: string; settlement_month: string; from_member_id: string | null; to_member_id: string | null; amount: number; status: "pending" | "completed"; memo: string | null; completed_at: string | null };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -99,7 +101,7 @@ function ConfigGuide() {
   return (
     <main className="center-screen">
       <section className="auth-card wide">
-        <p className="eyebrow">Family Life Manager v2</p>
+        <p className="eyebrow">Family Life Manager v3</p>
         <h1>Supabase 환경변수가 필요합니다.</h1>
         <p className="muted"><code>.env.example</code> 파일을 <code>.env.local</code>로 복사한 뒤 새 Supabase 프로젝트의 URL과 ANON KEY를 입력하세요.</p>
         <pre>{`NEXT_PUBLIC_SUPABASE_URL=...
@@ -137,7 +139,7 @@ function AuthScreen() {
       <section className="auth-card">
         <p className="eyebrow">Together Life</p>
         <h1>부부·커플·가족용 생활 관리</h1>
-        <p className="muted">공동 가계부, 정산, 일정, 장보기, 할 일, 목표를 한 공간에서 관리합니다.</p>
+        <p className="muted">공동 가계부, 정산, 공유 달력, 기념일, 다이어리, 장보기, 할 일, 목표를 한 공간에서 관리합니다.</p>
         <label>이메일</label>
         <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email@example.com" />
         <label>비밀번호</label>
@@ -167,6 +169,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [anniversaryEvents, setAnniversaryEvents] = useState<AnniversaryEvent[]>([]);
+  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -195,7 +199,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [taskForm, setTaskForm] = useState({ title: "", assigned_to_member_id: "", due_date: today(), repeat_type: "none", memo: "" });
   const [shoppingForm, setShoppingForm] = useState({ item_name: "", quantity: "", added_by_member_id: "", memo: "" });
   const [goalForm, setGoalForm] = useState({ title: "", target_amount: "0", current_amount: "0", target_date: "", memo: "" });
-  const [eventForm, setEventForm] = useState({ title: "", event_date: today(), event_time: "", assigned_to_member_id: "", repeat_type: "none", memo: "" });
+  const [eventForm, setEventForm] = useState({ title: "", event_date: today(), event_time: "", assigned_to_member_id: "", event_type: "schedule", repeat_type: "none", is_important: false, memo: "" });
+  const [anniversaryForm, setAnniversaryForm] = useState({ title: "", anniversary_date: today(), calendar_type: "solar", repeat_type: "yearly", member_id: "", memo: "" });
+  const [diaryForm, setDiaryForm] = useState({ title: "", diary_date: today(), mood: "normal", content: "", visibility: "group", author_member_id: "" });
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
@@ -234,7 +240,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const fetchGroupData = async (groupId: string) => {
     if (!supabase || !groupId) return;
     setLoading(true);
-    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, settlementRes] = await Promise.all([
+    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, settlementRes] = await Promise.all([
       supabase.from("group_members").select("*").eq("group_id", groupId).order("created_at", { ascending: true }),
       supabase.from("group_invites").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("categories").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
@@ -246,10 +252,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
       supabase.from("shopping_items").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("goals").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("calendar_events").select("*").eq("group_id", groupId).order("event_date", { ascending: true }),
+      supabase.from("anniversary_events").select("*").eq("group_id", groupId).order("anniversary_date", { ascending: true }),
+      supabase.from("diary_entries").select("*").eq("group_id", groupId).order("diary_date", { ascending: false }),
       supabase.from("settlement_records").select("*").eq("group_id", groupId).order("created_at", { ascending: false })
     ]);
     setLoading(false);
-    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, settlementRes].find((res) => res.error)?.error;
+    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, settlementRes].find((res) => res.error)?.error;
     if (firstError) return showNotice({ type: "error", text: firstError.message });
     setMembers((memberRes.data ?? []) as GroupMember[]);
     setInvites((inviteRes.data ?? []) as GroupInvite[]);
@@ -262,6 +270,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
     setShoppingItems((shoppingRes.data ?? []) as ShoppingItem[]);
     setGoals((goalRes.data ?? []) as Goal[]);
     setCalendarEvents((eventRes.data ?? []) as CalendarEvent[]);
+    setAnniversaryEvents((anniversaryRes.data ?? []) as AnniversaryEvent[]);
+    setDiaryEntries((diaryRes.data ?? []) as DiaryEntry[]);
     setSettlementRecords((settlementRes.data ?? []) as SettlementRecord[]);
   };
 
@@ -275,6 +285,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
       setTaskForm((prev) => prev.assigned_to_member_id ? prev : { ...prev, assigned_to_member_id: firstMember });
       setShoppingForm((prev) => prev.added_by_member_id ? prev : { ...prev, added_by_member_id: firstMember });
       setEventForm((prev) => prev.assigned_to_member_id ? prev : { ...prev, assigned_to_member_id: firstMember });
+      setAnniversaryForm((prev) => prev.member_id ? prev : { ...prev, member_id: firstMember });
+      setDiaryForm((prev) => prev.author_member_id ? prev : { ...prev, author_member_id: firstMember });
     }
   }, [members]);
 
@@ -447,9 +459,56 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!eventForm.title.trim()) return;
-    const { error } = await supabase.from("calendar_events").insert({ group_id: selectedGroupId, title: eventForm.title.trim(), event_date: eventForm.event_date, event_time: eventForm.event_time || null, assigned_to_member_id: eventForm.assigned_to_member_id || null, repeat_type: eventForm.repeat_type, memo: eventForm.memo || null });
+    const { error } = await supabase.from("calendar_events").insert({
+      group_id: selectedGroupId,
+      title: eventForm.title.trim(),
+      event_date: eventForm.event_date,
+      event_time: eventForm.event_time || null,
+      assigned_to_member_id: eventForm.assigned_to_member_id || null,
+      event_type: eventForm.event_type,
+      repeat_type: eventForm.repeat_type,
+      is_important: eventForm.is_important,
+      memo: eventForm.memo || null
+    });
     if (error) return showNotice({ type: "error", text: error.message });
-    setEventForm((prev) => ({ ...prev, title: "", memo: "" }));
+    setEventForm((prev) => ({ ...prev, title: "", memo: "", event_type: "schedule", repeat_type: "none", is_important: false }));
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const addAnniversary = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!anniversaryForm.title.trim()) return showNotice({ type: "error", text: "기념일 이름을 입력하세요." });
+    const { error } = await supabase.from("anniversary_events").insert({
+      group_id: selectedGroupId,
+      title: anniversaryForm.title.trim(),
+      anniversary_date: anniversaryForm.anniversary_date,
+      calendar_type: anniversaryForm.calendar_type,
+      repeat_type: anniversaryForm.repeat_type,
+      member_id: anniversaryForm.member_id || null,
+      memo: anniversaryForm.memo || null
+    });
+    if (error) return showNotice({ type: "error", text: error.message });
+    setAnniversaryForm((prev) => ({ ...prev, title: "", memo: "", repeat_type: "yearly" }));
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const addDiaryEntry = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!diaryForm.title.trim()) return showNotice({ type: "error", text: "다이어리 제목을 입력하세요." });
+    if (!diaryForm.content.trim()) return showNotice({ type: "error", text: "다이어리 내용을 입력하세요." });
+    const { error } = await supabase.from("diary_entries").insert({
+      group_id: selectedGroupId,
+      author_member_id: diaryForm.author_member_id || currentMember?.id || null,
+      diary_date: diaryForm.diary_date,
+      title: diaryForm.title.trim(),
+      mood: diaryForm.mood,
+      content: diaryForm.content.trim(),
+      visibility: diaryForm.visibility
+    });
+    if (error) return showNotice({ type: "error", text: error.message });
+    setDiaryForm((prev) => ({ ...prev, title: "", content: "", mood: "normal" }));
     await fetchGroupData(selectedGroupId);
   };
 
@@ -482,6 +541,42 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => item.is_active && item.next_payment_date?.startsWith(selectedMonth)), [fixedExpenses, selectedMonth]);
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
   const upcomingEvents = useMemo(() => calendarEvents.filter((item) => item.event_date >= today()).slice(0, 8), [calendarEvents]);
+  const selectedMonthEvents = useMemo(() => calendarEvents.filter((item) => item.event_date?.startsWith(selectedMonth)), [calendarEvents, selectedMonth]);
+  const selectedMonthAnniversaries = useMemo(() => anniversaryEvents.filter((item) => item.anniversary_date?.slice(5, 7) === selectedMonth.slice(5, 7)), [anniversaryEvents, selectedMonth]);
+  const selectedMonthDiaryEntries = useMemo(() => diaryEntries.filter((item) => item.diary_date?.startsWith(selectedMonth)).slice(0, 8), [diaryEntries, selectedMonth]);
+  const upcomingAnniversaries = useMemo(() => {
+    const now = new Date(`${today()}T00:00:00`);
+    const currentYear = now.getFullYear();
+    return anniversaryEvents
+      .map((item) => {
+        const monthDay = item.anniversary_date.slice(5, 10);
+        let nextDate = new Date(`${currentYear}-${monthDay}T00:00:00`);
+        if (nextDate < now) nextDate = new Date(`${currentYear + 1}-${monthDay}T00:00:00`);
+        const diffDays = Math.ceil((nextDate.getTime() - now.getTime()) / 86400000);
+        return { ...item, next_date: nextDate.toISOString().slice(0, 10), diffDays };
+      })
+      .sort((a, b) => a.diffDays - b.diffDays)
+      .slice(0, 8);
+  }, [anniversaryEvents]);
+  const calendarGrid = useMemo(() => {
+    const firstDay = new Date(`${selectedMonth}-01T00:00:00`);
+    const daysInMonth = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0).getDate();
+    const blanks = firstDay.getDay();
+    const cells: Array<{ date: string | null; day: number | null; events: CalendarEvent[]; anniversaries: AnniversaryEvent[]; diaries: DiaryEntry[] }> = [];
+    for (let i = 0; i < blanks; i += 1) cells.push({ date: null, day: null, events: [], anniversaries: [], diaries: [] });
+    for (let dayNum = 1; dayNum <= daysInMonth; dayNum += 1) {
+      const date = `${selectedMonth}-${String(dayNum).padStart(2, "0")}`;
+      cells.push({
+        date,
+        day: dayNum,
+        events: selectedMonthEvents.filter((item) => item.event_date === date),
+        anniversaries: selectedMonthAnniversaries.filter((item) => item.anniversary_date.slice(5, 10) === date.slice(5, 10)),
+        diaries: diaryEntries.filter((item) => item.diary_date === date)
+      });
+    }
+    while (cells.length % 7 !== 0) cells.push({ date: null, day: null, events: [], anniversaries: [], diaries: [] });
+    return cells;
+  }, [selectedMonth, selectedMonthEvents, selectedMonthAnniversaries, diaryEntries]);
 
   const summary = useMemo(() => {
     const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + Number(item.amount), 0);
@@ -572,9 +667,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return (
       <main className="app-shell single">
         <section className="hero-card wide">
-          <p className="eyebrow">Family Life Manager v2</p>
+          <p className="eyebrow">Family Life Manager v3</p>
           <h1>생활 그룹을 만들거나 초대코드로 참여하세요.</h1>
-          <p className="muted">v2는 권한 관리, 초대코드, 일정, 정산 완료 처리를 포함합니다.</p>
+          <p className="muted">v3는 공유 달력, 기념일, 다이어리 기능까지 포함합니다.</p>
           {notice && <p className={`notice ${notice.type}`}>{notice.text}</p>}
           <div className="grid two">
             <Card title="새 그룹 만들기"><GroupForm groupForm={groupForm} setGroupForm={setGroupForm} createGroup={createGroup} loading={loading} /></Card>
@@ -589,9 +684,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     <main className="app-shell">
       <aside className="sidebar">
         <div>
-          <p className="eyebrow">Together Life v2</p>
+          <p className="eyebrow">Together Life v3</p>
           <h1>우리 생활 관리</h1>
-          <p className="muted small">가계부 · 정산 · 일정 · 장보기 · 할 일 · 목표</p>
+          <p className="muted small">가계부 · 정산 · 달력 · 기념일 · 다이어리 · 장보기</p>
         </div>
         <label>생활 그룹</label>
         <select value={selectedGroupId} onChange={(event) => setSelectedGroupId(event.target.value)}>
@@ -625,7 +720,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
         <div className="topbar">
           <div>
             <h2>{selectedGroup?.name ?? "생활 그룹"}</h2>
-            <p className="muted">권한·초대·정산완료·일정 기능이 추가된 v2입니다.</p>
+            <p className="muted">권한·초대·정산완료·공유달력·기념일·다이어리 기능이 추가된 v3입니다.</p>
           </div>
           <div className="month-control">
             <label>기준 월</label>
@@ -642,6 +737,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
           <SummaryCard title="공동 지출" value={currency(summary.sharedExpense)} tone="blue" />
           <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />
           <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
+          <SummaryCard title="이번 달 일정" value={`${selectedMonthEvents.length}건`} tone="blue" />
+          <SummaryCard title="이번 달 다이어리" value={`${selectedMonthDiaryEntries.length}건`} tone="purple" />
         </section>
 
         <section className="grid two">
@@ -729,17 +826,64 @@ function FamilyLifeApp({ session }: { session: Session }) {
           </Card>
         </section>
 
+        <section className="grid two">
+          <Card title={`${monthLabel(selectedMonth)} 공유 달력`} description="일정, 기념일, 다이어리 작성일을 월간 달력으로 함께 봅니다.">
+            <div className="calendar-weekdays"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+            <div className="calendar-grid">
+              {calendarGrid.map((cell, index) => (
+                <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""}`}>
+                  {cell.day && <strong>{cell.day}</strong>}
+                  {cell.anniversaries.slice(0, 2).map((anniversary) => <small className="cal-pill anniversary" key={anniversary.id}>🎉 {anniversary.title}</small>)}
+                  {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={event.id}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
+                  {cell.diaries.slice(0, 1).map((diary) => <small className="cal-pill diary" key={diary.id}>📓 {diary.title}</small>)}
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card title="다가오는 일정·기념일" description="가까운 일정과 반복 기념일을 빠르게 확인합니다.">
+            <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
+            <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
+          </Card>
+        </section>
+
         <section className="grid three">
-          <Card title="일정" description="기념일, 병원, 납부일 등 가족 일정을 공유합니다.">
+          <Card title="일정 등록" description="병원, 납부일, 가족 일정, 데이트 약속을 공유합니다.">
             <form className="stack-form" onSubmit={addCalendarEvent}>
               <input value={eventForm.title} onChange={(event) => setEventForm({ ...eventForm, title: event.target.value })} placeholder="일정명" disabled={!canEdit} />
               <div className="form-row"><input type="date" value={eventForm.event_date} onChange={(event) => setEventForm({ ...eventForm, event_date: event.target.value })} disabled={!canEdit} /><input type="time" value={eventForm.event_time} onChange={(event) => setEventForm({ ...eventForm, event_time: event.target.value })} disabled={!canEdit} /></div>
+              <div className="form-row"><select value={eventForm.event_type} onChange={(event) => setEventForm({ ...eventForm, event_type: event.target.value })} disabled={!canEdit}><option value="schedule">일반 일정</option><option value="hospital">병원/건강</option><option value="payment">납부일</option><option value="date">데이트/외출</option><option value="family">가족행사</option></select><select value={eventForm.repeat_type} onChange={(event) => setEventForm({ ...eventForm, repeat_type: event.target.value })} disabled={!canEdit}><option value="none">반복 없음</option><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select></div>
               <select value={eventForm.assigned_to_member_id} onChange={(event) => setEventForm({ ...eventForm, assigned_to_member_id: event.target.value })} disabled={!canEdit}><option value="">담당자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+              <textarea rows={3} value={eventForm.memo} onChange={(event) => setEventForm({ ...eventForm, memo: event.target.value })} placeholder="메모" disabled={!canEdit} />
+              <label className="check-line"><input type="checkbox" checked={eventForm.is_important} onChange={(event) => setEventForm({ ...eventForm, is_important: event.target.checked })} disabled={!canEdit} /> 중요 일정</label>
               <button disabled={!canEdit}>일정 추가</button>
             </form>
-            <List>{upcomingEvents.map((event) => <li key={event.id}><button className="text-button" onClick={() => toggleRow("calendar_events", event.id, event.is_done)} disabled={!canEdit}>{event.is_done ? "✅" : "⬜"}</button><span className={event.is_done ? "done" : ""}>{event.event_date} {event.event_time ?? ""} · {event.title}</span><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></li>)}</List>
           </Card>
 
+          <Card title="기념일" description="만난 날, 결혼기념일, 생일, 가족 기념일을 관리합니다.">
+            <form className="stack-form" onSubmit={addAnniversary}>
+              <input value={anniversaryForm.title} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, title: event.target.value })} placeholder="기념일명" disabled={!canEdit} />
+              <div className="form-row"><input type="date" value={anniversaryForm.anniversary_date} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, anniversary_date: event.target.value })} disabled={!canEdit} /><select value={anniversaryForm.calendar_type} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, calendar_type: event.target.value })} disabled={!canEdit}><option value="solar">양력</option><option value="lunar">음력 메모</option></select></div>
+              <div className="form-row"><select value={anniversaryForm.repeat_type} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, repeat_type: event.target.value })} disabled={!canEdit}><option value="yearly">매년 반복</option><option value="once">한 번만</option></select><select value={anniversaryForm.member_id} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, member_id: event.target.value })} disabled={!canEdit}><option value="">관련 구성원</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
+              <textarea rows={3} value={anniversaryForm.memo} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, memo: event.target.value })} placeholder="선물 아이디어, 장소, 메모" disabled={!canEdit} />
+              <button disabled={!canEdit}>기념일 추가</button>
+            </form>
+            <List compact>{anniversaryEvents.slice(0, 6).map((item) => <li key={item.id}><span>{item.anniversary_date.slice(5)} · {item.title} · {item.calendar_type === "lunar" ? "음력메모" : "양력"}</span><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", item.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+          </Card>
+
+          <Card title="다이어리" description="커플·부부·가족 일기, 감사 기록, 하루 메모를 남깁니다.">
+            <form className="stack-form" onSubmit={addDiaryEntry}>
+              <input value={diaryForm.title} onChange={(event) => setDiaryForm({ ...diaryForm, title: event.target.value })} placeholder="제목" disabled={!canEdit} />
+              <div className="form-row"><input type="date" value={diaryForm.diary_date} onChange={(event) => setDiaryForm({ ...diaryForm, diary_date: event.target.value })} disabled={!canEdit} /><select value={diaryForm.mood} onChange={(event) => setDiaryForm({ ...diaryForm, mood: event.target.value })} disabled={!canEdit}><option value="happy">😊 좋음</option><option value="normal">🙂 보통</option><option value="tired">😵 피곤</option><option value="sad">😢 슬픔</option><option value="thankful">🙏 감사</option></select></div>
+              <div className="form-row"><select value={diaryForm.author_member_id} onChange={(event) => setDiaryForm({ ...diaryForm, author_member_id: event.target.value })} disabled={!canEdit}><option value="">작성자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select><select value={diaryForm.visibility} onChange={(event) => setDiaryForm({ ...diaryForm, visibility: event.target.value })} disabled={!canEdit}><option value="group">공유</option><option value="private">개인 메모</option></select></div>
+              <textarea rows={5} value={diaryForm.content} onChange={(event) => setDiaryForm({ ...diaryForm, content: event.target.value })} placeholder="오늘 있었던 일, 고마웠던 일, 함께 기억하고 싶은 내용을 적어보세요." disabled={!canEdit} />
+              <button disabled={!canEdit}>다이어리 저장</button>
+            </form>
+            <List>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.map((diary) => <li key={diary.id}><span>{diary.diary_date} · {moodLabel(diary.mood)} · {diary.title} · {memberName(diary.author_member_id)}</span><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+          </Card>
+        </section>
+
+        <section className="grid two">
           <Card title="장보기" description="공동으로 필요한 물건을 체크합니다.">
             <form className="inline-form" onSubmit={addShoppingItem}>
               <input value={shoppingForm.item_name} onChange={(event) => setShoppingForm({ ...shoppingForm, item_name: event.target.value })} placeholder="품목" disabled={!canEdit} />
@@ -856,6 +1000,14 @@ function roleLabel(role: Role) {
   if (role === "admin") return "관리자";
   if (role === "member") return "멤버";
   return "조회전용";
+}
+
+function moodLabel(mood: string | null | undefined) {
+  if (mood === "happy") return "😊 좋음";
+  if (mood === "tired") return "😵 피곤";
+  if (mood === "sad") return "😢 슬픔";
+  if (mood === "thankful") return "🙏 감사";
+  return "🙂 보통";
 }
 
 function SummaryCard({ title, value, tone }: { title: string; value: string; tone: string }) {

@@ -1,4 +1,4 @@
-# Family Life Manager v2
+# Family Life Manager v3
 
 부부·커플·가족용 생활 관리 웹앱입니다.
 
@@ -53,3 +53,13 @@ http://localhost:3000
 NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 ```
+
+
+## v3 추가 기능
+
+- 월간 공유 달력: 일정, 기념일, 다이어리 작성일을 달력에서 확인
+- 일정 고도화: 일정 종류, 반복, 중요 일정, 메모 지원
+- 기념일 관리: 만난 날, 결혼기념일, 생일, 가족 기념일 등록
+- 다이어리: 커플/부부/가족 일기, 감정 기록, 공유/개인 메모 구분
+
+기존 v2 데이터가 있다면 Supabase SQL Editor에서 `supabase/update_v3.sql`만 실행하세요.
