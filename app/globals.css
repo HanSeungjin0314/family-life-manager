@@ -176,3 +176,15 @@ textarea { resize: vertical; min-height: 76px; }
   .calendar-cell { min-height: 76px; padding: 6px; }
   .card:has(.calendar-grid) { overflow-x: auto; }
 }
+
+.simple-sidebar { justify-content: flex-start; }
+.sidebar-note { background: rgba(255,255,255,.08); border: 1px dashed rgba(255,255,255,.18); border-radius: 16px; padding: 12px; color: #cbd5e1; font-size: 13px; line-height: 1.5; }
+.tab-bar { display: flex; flex-wrap: wrap; gap: 10px; background: var(--card); padding: 14px; border-radius: 22px; box-shadow: var(--shadow); }
+.tab-button { background: #eef2ff; color: var(--primary-dark); padding: 10px 16px; border-radius: 999px; }
+.tab-button:hover { background: #e0e7ff; }
+.tab-button.active { background: var(--primary); color: white; }
+.tab-button.active:hover { background: var(--primary-dark); }
+@media (max-width: 760px) {
+  .tab-bar { overflow-x: auto; flex-wrap: nowrap; }
+  .tab-button { white-space: nowrap; }
+}
