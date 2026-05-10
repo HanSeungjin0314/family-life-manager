@@ -1,4 +1,4 @@
-# Together Life v8
+# Together Life v9
 
 부부가 함께 쓰는 생활 관리 웹앱입니다.
 
@@ -18,11 +18,11 @@
 
 ## Supabase 적용
 
-v8은 DB 구조 변경이 없습니다.
+v9은 DB 구조 변경이 없습니다.
 
 이미 v6의 `supabase/update_v6.sql`을 실행했다면 추가 SQL 실행은 필요 없습니다.
 
-`supabase/update_v7.sql`, `supabase/update_v8.sql`은 안내용 파일입니다.
+`supabase/update_v7.sql`, `supabase/update_v9.sql`은 안내용 파일입니다.
 
 ## 로컬 실행
 
@@ -41,9 +41,19 @@ git push
 ```
 
 
-## v8 추가 기능
+## v9 추가 기능
 
 - 설정 탭에서 현재 생활 그룹 JSON 백업 다운로드
 - JSON 백업 파일 업로드 후 복원 미리보기
 - 주요 데이터 복원 실행
 - 사진 파일 자체는 포함하지 않고 다이어리 사진 경로와 URL 메타데이터를 백업합니다.
+
+
+## v9 추가 기능
+
+- 고정비 반복 여부 설정
+- 고정비 반복 주기 선택: 매일 / 매주 / 매월 / 매년
+- 고정비 반복 종료일 설정
+- 종료일이 지난 고정비는 알림과 월별 합계 계산에서 제외
+
+기존 v8에서 업데이트하는 경우 Supabase SQL Editor에서 `supabase/update_v9.sql`을 한 번 실행하세요.

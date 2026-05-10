@@ -123,7 +123,9 @@ create table fixed_expenses (
   category_id uuid references categories(id) on delete set null,
   account_id uuid references accounts(id) on delete set null,
   paid_by_member_id uuid references group_members(id) on delete set null,
-  repeat_type text not null default 'monthly', -- weekly / monthly / yearly
+  repeat_enabled boolean not null default true,
+  repeat_type text not null default 'monthly', -- none / daily / weekly / monthly / yearly
+  repeat_until date,
   is_active boolean not null default true,
   memo text,
   created_at timestamp with time zone default now()

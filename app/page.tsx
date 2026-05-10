@@ -41,6 +41,8 @@ type FixedExpense = {
   account_id: string | null;
   paid_by_member_id: string | null;
   repeat_type: string;
+  repeat_enabled: boolean | null;
+  repeat_until: string | null;
   is_active: boolean;
   memo: string | null;
 };
@@ -88,6 +90,69 @@ const nextDateForRepeat = (baseDate: string | null | undefined, repeatType: stri
     return dateOnly(next);
   }
   return next >= from ? dateOnly(next) : null;
+};
+const isAfterEndDate = (date: string | null, endDate: string | null | undefined) => Boolean(date && endDate && date > endDate);
+const lastDayOfMonth = (year: number, monthIndex: number) => new Date(year, monthIndex + 1, 0).getDate();
+const fixedRepeatLabel = (repeatEnabled: boolean | null | undefined, repeatType: string | null | undefined) => {
+  if (!repeatEnabled || !repeatType || repeatType === "none" || repeatType === "once") return "반복 없음";
+  if (repeatType === "daily") return "매일 반복";
+  if (repeatType === "weekly") return "매주 반복";
+  if (repeatType === "monthly") return "매월 반복";
+  if (repeatType === "yearly") return "매년 반복";
+  return "반복";
+};
+const fixedOccurrenceInMonth = (item: Pick<FixedExpense, "is_active" | "start_date" | "next_payment_date" | "repeat_type" | "repeat_enabled" | "repeat_until">, month: string) => {
+  if (!item.is_active) return null;
+  const baseDate = item.next_payment_date || item.start_date;
+  if (!baseDate) return null;
+  const repeatEnabled = Boolean(item.repeat_enabled) && item.repeat_type !== "none" && item.repeat_type !== "once";
+  const monthStartDate = `${month}-01`;
+  const monthEnd = dateOnly(new Date(new Date(`${month}-01T00:00:00`).getFullYear(), new Date(`${month}-01T00:00:00`).getMonth() + 1, 0));
+  if (!repeatEnabled) return baseDate.startsWith(month) ? baseDate : null;
+  if (item.repeat_until && monthStartDate > item.repeat_until) return null;
+  const base = new Date(`${baseDate}T00:00:00`);
+  const target = new Date(`${month}-01T00:00:00`);
+  let occurrence: string | null = null;
+  if (item.repeat_type === "monthly") {
+    const day = Math.min(base.getDate(), lastDayOfMonth(target.getFullYear(), target.getMonth()));
+    occurrence = dateOnly(new Date(target.getFullYear(), target.getMonth(), day));
+  } else if (item.repeat_type === "yearly") {
+    if (base.getMonth() !== target.getMonth()) return null;
+    const day = Math.min(base.getDate(), lastDayOfMonth(target.getFullYear(), target.getMonth()));
+    occurrence = dateOnly(new Date(target.getFullYear(), target.getMonth(), day));
+  } else {
+    occurrence = nextDateForRepeat(baseDate, item.repeat_type, monthStartDate);
+    if (!occurrence || occurrence > monthEnd) return null;
+  }
+  if (!occurrence || occurrence < baseDate) return null;
+  if (isAfterEndDate(occurrence, item.repeat_until)) return null;
+  return occurrence;
+};
+const nextFixedExpenseDate = (item: Pick<FixedExpense, "is_active" | "start_date" | "next_payment_date" | "repeat_type" | "repeat_enabled" | "repeat_until">, fromDate = today()) => {
+  if (!item.is_active) return null;
+  const baseDate = item.next_payment_date || item.start_date;
+  if (!baseDate) return null;
+  const repeatEnabled = Boolean(item.repeat_enabled) && item.repeat_type !== "none" && item.repeat_type !== "once";
+  const nextDate = repeatEnabled ? nextDateForRepeat(baseDate, item.repeat_type, fromDate) : (baseDate >= fromDate ? baseDate : null);
+  if (!nextDate || isAfterEndDate(nextDate, item.repeat_until)) return null;
+  return nextDate;
+};
+const fixedOccurrenceCountInMonth = (item: Pick<FixedExpense, "is_active" | "start_date" | "next_payment_date" | "repeat_type" | "repeat_enabled" | "repeat_until">, month: string) => {
+  if (!fixedOccurrenceInMonth(item, month)) return 0;
+  const baseDate = item.next_payment_date || item.start_date;
+  if (!baseDate) return 0;
+  const repeatEnabled = Boolean(item.repeat_enabled) && item.repeat_type !== "none" && item.repeat_type !== "once";
+  if (!repeatEnabled || item.repeat_type === "monthly" || item.repeat_type === "yearly") return 1;
+  const monthStartDate = `${month}-01`;
+  const monthEnd = dateOnly(new Date(new Date(`${month}-01T00:00:00`).getFullYear(), new Date(`${month}-01T00:00:00`).getMonth() + 1, 0));
+  let cursor = nextDateForRepeat(baseDate, item.repeat_type, monthStartDate);
+  let count = 0;
+  while (cursor && cursor <= monthEnd && !isAfterEndDate(cursor, item.repeat_until)) {
+    count += 1;
+    const nextFrom = dateOnly(new Date(new Date(`${cursor}T00:00:00`).getTime() + 86400000));
+    cursor = nextDateForRepeat(baseDate, item.repeat_type, nextFrom);
+  }
+  return count;
 };
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
 const MAX_DIARY_PHOTOS = 5;
@@ -279,7 +344,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     settlement_required: true,
     memo: ""
   });
-  const [fixedForm, setFixedForm] = useState({ title: "", start_date: today(), next_payment_date: today(), amount: "0", category_id: "", account_id: "", paid_by_member_id: "", repeat_type: "monthly", memo: "" });
+  const [fixedForm, setFixedForm] = useState({ title: "", start_date: today(), next_payment_date: today(), amount: "0", category_id: "", account_id: "", paid_by_member_id: "", repeat_enabled: true, repeat_type: "monthly", repeat_until: "", memo: "" });
   const [taskForm, setTaskForm] = useState({ title: "", assigned_to_member_id: "", due_date: today(), repeat_type: "none", memo: "" });
   const [shoppingForm, setShoppingForm] = useState({ item_name: "", quantity: "", added_by_member_id: "", memo: "" });
   const [goalForm, setGoalForm] = useState({ title: "", target_amount: "0", current_amount: "0", target_date: "", memo: "" });
@@ -507,9 +572,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireAdmin()) return;
     if (!fixedForm.title.trim()) return;
-    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_type: fixedForm.repeat_type, memo: fixedForm.memo || null });
+    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
     if (error) return showNotice({ type: "error", text: error.message });
-    setFixedForm((prev) => ({ ...prev, title: "", amount: "0", memo: "" }));
+    setFixedForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", repeat_until: "" }));
     await fetchGroupData(selectedGroupId);
   };
 
@@ -779,8 +844,19 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (!title) return;
     const amount = askMoney("금액을 수정하세요.", item.amount);
     if (amount === null) return;
-    const nextPaymentDate = askDate("다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
-    await updateRow("fixed_expenses", item.id, { title, amount, next_payment_date: nextPaymentDate }, true);
+    const nextPaymentDate = askDate("첫 지출일 또는 다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
+    if (!nextPaymentDate) return;
+    const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?
+확인 = 반복함 / 취소 = 한 번만");
+    let repeatType = "none";
+    let repeatUntil: string | null = null;
+    if (repeatEnabled) {
+      const inputRepeatType = window.prompt("반복 주기를 입력하세요. daily / weekly / monthly / yearly", item.repeat_type && item.repeat_type !== "none" ? item.repeat_type : "monthly");
+      if (!inputRepeatType) return;
+      repeatType = ["daily", "weekly", "monthly", "yearly"].includes(inputRepeatType) ? inputRepeatType : "monthly";
+      repeatUntil = askDate("언제까지 반복할까요? 비워두면 종료일 없음. 예: 2027-12-31", item.repeat_until ?? "") || null;
+    }
+    await updateRow("fixed_expenses", item.id, { title, amount, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil }, true);
   };
 
   const editTask = async (task: Task) => {
@@ -866,7 +942,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const monthTransactions = useMemo(() => transactions.filter((item) => item.transaction_date?.startsWith(selectedMonth)), [transactions, selectedMonth]);
   const monthBudgets = useMemo(() => budgets.filter((item) => item.budget_month?.startsWith(selectedMonth)), [budgets, selectedMonth]);
-  const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => item.is_active && item.next_payment_date?.startsWith(selectedMonth)), [fixedExpenses, selectedMonth]);
+  const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => fixedOccurrenceInMonth(item, selectedMonth)), [fixedExpenses, selectedMonth]);
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
   const upcomingEvents = useMemo(() => calendarEvents.filter((item) => item.event_date >= today()).slice(0, 8), [calendarEvents]);
   const selectedMonthEvents = useMemo(() => calendarEvents.filter((item) => item.event_date?.startsWith(selectedMonth)), [calendarEvents, selectedMonth]);
@@ -914,7 +990,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
       if (anniversary.diffDays <= 60) rows.push({ id: `anniversary-${anniversary.id}`, type: "기념일", date: anniversary.next_date, title: anniversary.title, dday: anniversary.diffDays });
     });
     fixedExpenses.filter((item) => item.is_active).forEach((item) => {
-      const nextDate = nextDateForRepeat(item.next_payment_date, item.repeat_type, now);
+      const nextDate = nextFixedExpenseDate(item, now);
       if (!nextDate) return;
       const dday = daysBetween(now, nextDate);
       if (dday <= 30) rows.push({ id: `fixed-${item.id}`, type: "고정비", date: nextDate, title: `${item.title} · ${currency(item.amount)}`, dday });
@@ -973,11 +1049,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const summary = useMemo(() => {
     const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + Number(item.amount), 0);
     const variableExpense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + Number(item.amount), 0);
-    const fixedExpense = monthFixedExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
+    const fixedExpense = monthFixedExpenses.reduce((sum, item) => sum + Number(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth), 0);
     const sharedExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "shared").reduce((sum, item) => sum + Number(item.amount), 0);
     const personalExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "personal").reduce((sum, item) => sum + Number(item.amount), 0);
     return { income, variableExpense, fixedExpense, totalExpense: variableExpense + fixedExpense, balance: income - variableExpense - fixedExpense, sharedExpense, personalExpense };
-  }, [monthTransactions, monthFixedExpenses]);
+  }, [monthTransactions, monthFixedExpenses, selectedMonth]);
 
   const settlementBalances = useMemo(() => {
     const balances = new Map<string, number>();
@@ -1307,9 +1383,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" disabled={!canAdmin} />
                   <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canAdmin} /></div>
                   <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canAdmin}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canAdmin} /> 반복 사용</label>
+                  {fixedForm.repeat_enabled && <div className="form-row"><select value={fixedForm.repeat_type} onChange={(event) => setFixedForm({ ...fixedForm, repeat_type: event.target.value })} disabled={!canAdmin}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select><input type="date" value={fixedForm.repeat_until} onChange={(event) => setFixedForm({ ...fixedForm, repeat_until: event.target.value })} disabled={!canAdmin} title="반복 종료일" /></div>}
+                  {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
                   <button disabled={!canAdmin}>고정비 저장</button>
                 </form>
-                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {currency(item.amount)}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
