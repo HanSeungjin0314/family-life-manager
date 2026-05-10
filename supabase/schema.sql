@@ -117,6 +117,7 @@ create table fixed_expenses (
   id uuid primary key default gen_random_uuid(),
   group_id uuid references life_groups(id) on delete cascade not null,
   title text not null,
+  scope text not null default 'shared' check (scope in ('shared', 'personal')),
   start_date date not null default current_date,
   next_payment_date date,
   amount numeric not null default 0,

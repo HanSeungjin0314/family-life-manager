@@ -34,6 +34,7 @@ type FixedExpense = {
   id: string;
   group_id: string;
   title: string;
+  scope: "shared" | "personal" | null;
   start_date: string;
   next_payment_date: string | null;
   amount: number;
@@ -349,7 +350,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     settlement_required: true,
     memo: ""
   });
-  const [fixedForm, setFixedForm] = useState({ title: "", start_date: today(), next_payment_date: today(), amount: "0", category_id: "", account_id: "", paid_by_member_id: "", repeat_enabled: true, repeat_type: "monthly", repeat_until: "", memo: "" });
+  const [fixedForm, setFixedForm] = useState({ title: "", scope: "shared" as "shared" | "personal", start_date: today(), next_payment_date: today(), amount: "0", category_id: "", account_id: "", paid_by_member_id: "", repeat_enabled: true, repeat_type: "monthly", repeat_until: "", memo: "" });
   const [taskForm, setTaskForm] = useState({ title: "", assigned_to_member_id: "", due_date: today(), repeat_type: "none", memo: "" });
   const [shoppingForm, setShoppingForm] = useState({ item_name: "", quantity: "", added_by_member_id: "", memo: "" });
   const [goalForm, setGoalForm] = useState({ title: "", target_amount: "0", current_amount: "0", target_date: "", memo: "" });
@@ -614,7 +615,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireAdmin()) return;
     if (!fixedForm.title.trim()) return;
-    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
+    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), scope: fixedForm.scope, start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
     if (error) return showNotice({ type: "error", text: error.message });
     setFixedForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", repeat_until: "" }));
     await fetchGroupData(selectedGroupId);
@@ -954,6 +955,9 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     if (!title) return;
     const amount = askMoney("금액을 수정하세요.", item.amount);
     if (amount === null) return;
+    const scopeInput = window.prompt("공동/개인 중 하나를 입력하세요. shared=공동, personal=개인", item.scope === "personal" ? "personal" : "shared");
+    if (scopeInput === null) return;
+    const scope = scopeInput.includes("개") || scopeInput.toLowerCase().startsWith("p") ? "personal" : "shared";
     const nextPaymentDate = askDate("첫 지출일 또는 다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
     if (!nextPaymentDate) return;
     const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?\n확인 = 반복함 / 취소 = 한 번만");
@@ -965,7 +969,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       repeatType = ["daily", "weekly", "monthly", "yearly"].includes(inputRepeatType) ? inputRepeatType : "monthly";
       repeatUntil = askDate("언제까지 반복할까요? 비워두면 종료일 없음. 예: 2027-12-31", item.repeat_until ?? "") || null;
     }
-    await updateRow("fixed_expenses", item.id, { title, amount, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil }, true);
+    await updateRow("fixed_expenses", item.id, { title, amount, scope, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil }, true);
   };
 
   const editTask = async (task: Task) => {
@@ -1191,8 +1195,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + Number(item.amount), 0);
     const variableExpense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + Number(item.amount), 0);
     const fixedExpense = monthFixedExpenses.reduce((sum, item) => sum + Number(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth), 0);
-    const sharedExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "shared").reduce((sum, item) => sum + Number(item.amount), 0);
-    const personalExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "personal").reduce((sum, item) => sum + Number(item.amount), 0);
+    const sharedFixedExpense = monthFixedExpenses.filter((item) => (item.scope ?? "shared") === "shared").reduce((sum, item) => sum + Number(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth), 0);
+    const personalFixedExpense = monthFixedExpenses.filter((item) => item.scope === "personal").reduce((sum, item) => sum + Number(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth), 0);
+    const sharedExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "shared").reduce((sum, item) => sum + Number(item.amount), 0) + sharedFixedExpense;
+    const personalExpense = monthTransactions.filter((item) => item.type === "expense" && item.scope === "personal").reduce((sum, item) => sum + Number(item.amount), 0) + personalFixedExpense;
     return { income, variableExpense, fixedExpense, totalExpense: variableExpense + fixedExpense, balance: income - variableExpense - fixedExpense, sharedExpense, personalExpense };
   }, [monthTransactions, monthFixedExpenses, selectedMonth]);
 
@@ -1208,6 +1214,14 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         balances.set(item.paid_by_member_id as string, (balances.get(item.paid_by_member_id as string) ?? 0) + amount);
         activeMembers.forEach((member) => balances.set(member.id, (balances.get(member.id) ?? 0) - share));
       });
+    monthFixedExpenses
+      .filter((item) => (item.scope ?? "shared") === "shared" && item.paid_by_member_id)
+      .forEach((item) => {
+        const amount = Number(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth);
+        const share = activeMembers.length > 0 ? amount / activeMembers.length : 0;
+        balances.set(item.paid_by_member_id as string, (balances.get(item.paid_by_member_id as string) ?? 0) + amount);
+        activeMembers.forEach((member) => balances.set(member.id, (balances.get(member.id) ?? 0) - share));
+      });
     monthSettlementRecords
       .filter((record) => record.status === "completed" && record.from_member_id && record.to_member_id)
       .forEach((record) => {
@@ -1215,7 +1229,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         balances.set(record.to_member_id as string, (balances.get(record.to_member_id as string) ?? 0) - Number(record.amount));
       });
     return members.map((member) => ({ member, balance: Math.round(balances.get(member.id) ?? 0) }));
-  }, [members, monthTransactions, monthSettlementRecords]);
+  }, [members, monthTransactions, monthFixedExpenses, monthSettlementRecords, selectedMonth]);
 
   const settlementSuggestions = useMemo(() => {
     const creditors = settlementBalances.filter((row) => row.balance > 0).map((row) => ({ ...row }));
@@ -1525,6 +1539,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <Card title="고정비" description="보험, 통신비, 구독료처럼 반복되는 지출입니다.">
                 <form className="stack-form" onSubmit={addFixedExpense}>
                   <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" disabled={!canAdmin} />
+                  <div className="form-row"><select value={fixedForm.scope} onChange={(event) => setFixedForm({ ...fixedForm, scope: event.target.value as "shared" | "personal" })} disabled={!canAdmin}><option value="shared">공동</option><option value="personal">개인</option></select><select value={fixedForm.paid_by_member_id} onChange={(event) => setFixedForm({ ...fixedForm, paid_by_member_id: event.target.value })} disabled={!canAdmin}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
                   <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canAdmin} /></div>
                   <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canAdmin}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canAdmin} /> 반복 사용</label>
@@ -1532,7 +1547,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
                   <button disabled={!canAdmin}>고정비 저장</button>
                 </form>
-                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {(item.scope ?? "shared") === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
