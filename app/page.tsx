@@ -797,19 +797,34 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
   const upcomingEvents = useMemo(() => calendarEvents.filter((item) => item.event_date >= today()).slice(0, 8), [calendarEvents]);
   const selectedMonthEvents = useMemo(() => calendarEvents.filter((item) => item.event_date?.startsWith(selectedMonth)), [calendarEvents, selectedMonth]);
-  const selectedMonthAnniversaries = useMemo(() => anniversaryEvents.filter((item) => item.anniversary_date?.slice(5, 7) === selectedMonth.slice(5, 7)), [anniversaryEvents, selectedMonth]);
+  const selectedMonthAnniversaries = useMemo(() => {
+    const monthEnd = new Date(new Date(`${selectedMonth}-01T00:00:00`).getFullYear(), new Date(`${selectedMonth}-01T00:00:00`).getMonth() + 1, 0);
+    return anniversaryEvents.filter((item) => {
+      if (!item.anniversary_date) return false;
+      if (item.repeat_type === "once") return item.anniversary_date.startsWith(selectedMonth);
+      const startDate = new Date(`${item.anniversary_date}T00:00:00`);
+      return item.anniversary_date.slice(5, 7) === selectedMonth.slice(5, 7) && monthEnd >= startDate;
+    });
+  }, [anniversaryEvents, selectedMonth]);
   const selectedMonthDiaryEntries = useMemo(() => diaryEntries.filter((item) => item.diary_date?.startsWith(selectedMonth)).slice(0, 8), [diaryEntries, selectedMonth]);
   const upcomingAnniversaries = useMemo(() => {
     const now = new Date(`${today()}T00:00:00`);
     const currentYear = now.getFullYear();
     return anniversaryEvents
       .map((item) => {
-        const monthDay = item.anniversary_date.slice(5, 10);
-        let nextDate = new Date(`${currentYear}-${monthDay}T00:00:00`);
-        if (nextDate < now) nextDate = new Date(`${currentYear + 1}-${monthDay}T00:00:00`);
+        if (!item.anniversary_date) return null;
+        const startDate = new Date(`${item.anniversary_date}T00:00:00`);
+        let nextDate = startDate;
+        if (item.repeat_type !== "once" && startDate <= now) {
+          const monthDay = item.anniversary_date.slice(5, 10);
+          nextDate = new Date(`${currentYear}-${monthDay}T00:00:00`);
+          if (nextDate < now) nextDate = new Date(`${currentYear + 1}-${monthDay}T00:00:00`);
+        }
+        if (nextDate < now) return null;
         const diffDays = Math.ceil((nextDate.getTime() - now.getTime()) / 86400000);
         return { ...item, next_date: nextDate.toISOString().slice(0, 10), diffDays };
       })
+      .filter((item): item is AnniversaryEvent & { next_date: string; diffDays: number } => item !== null)
       .sort((a, b) => a.diffDays - b.diffDays)
       .slice(0, 8);
   }, [anniversaryEvents]);
