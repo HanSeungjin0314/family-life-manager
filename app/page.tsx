@@ -406,6 +406,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const canAdmin = currentRole === "owner" || currentRole === "admin";
   const canEdit = canAdmin || currentRole === "member";
   const isOwner = currentRole === "owner";
+  const canViewPersonal = isOwner;
 
   const memberName = (id: string | null) => members.find((member) => member.id === id)?.display_name ?? "-";
   const categoryName = (id: string | null) => categories.find((category) => category.id === id)?.name ?? "미분류";
@@ -632,13 +633,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
       created_by: currentUserId,
       title: transactionForm.title.trim(),
       type: transactionForm.type,
-      scope: transactionForm.scope,
+      scope: canViewPersonal ? transactionForm.scope : "shared",
       transaction_date: transactionForm.transaction_date,
       amount,
       category_id: transactionForm.category_id || null,
       account_id: transactionForm.account_id || null,
       paid_by_member_id: transactionForm.paid_by_member_id || null,
-      settlement_required: transactionForm.type === "expense" && transactionForm.scope === "shared" ? transactionForm.settlement_required : false,
+      settlement_required: transactionForm.type === "expense" && (canViewPersonal ? transactionForm.scope : "shared") === "shared" ? transactionForm.settlement_required : false,
       split_method: transactionForm.settlement_required ? "equal" : "none",
       memo: transactionForm.memo || null
     };
@@ -655,7 +656,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireAdmin()) return;
     if (!fixedForm.title.trim()) return;
-    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), scope: fixedForm.scope, start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
+    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), scope: canViewPersonal ? fixedForm.scope : "shared", start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
     if (error) return showNotice({ type: "error", text: error.message });
     setFixedForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", repeat_until: "" }));
     await fetchGroupData(selectedGroupId);
@@ -998,7 +999,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     if (amount === null) return;
     const scopeInput = window.prompt("공동/개인 중 하나를 입력하세요. shared=공동, personal=개인", item.scope === "personal" ? "personal" : "shared");
     if (scopeInput === null) return;
-    const scope = scopeInput.includes("개") || scopeInput.toLowerCase().startsWith("p") ? "personal" : "shared";
+    const scope = canViewPersonal && (scopeInput.includes("개") || scopeInput.toLowerCase().startsWith("p")) ? "personal" : "shared";
     const nextPaymentDate = askDate("첫 지출일 또는 다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
     if (!nextPaymentDate) return;
     const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?\n확인 = 반복함 / 취소 = 한 번만");
@@ -1144,10 +1145,20 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     await fetchGroupData(selectedGroupId);
   };
 
-  const monthTransactions = useMemo(() => transactions.filter((item) => item.transaction_date?.startsWith(selectedMonth)), [transactions, selectedMonth]);
+  const visibleTransactions = useMemo(() => {
+    if (canViewPersonal) return transactions;
+    return transactions.filter((item) => item.scope !== "personal");
+  }, [transactions, canViewPersonal]);
+
+  const visibleFixedExpenses = useMemo(() => {
+    if (canViewPersonal) return fixedExpenses;
+    return fixedExpenses.filter((item) => (item.scope ?? "shared") !== "personal");
+  }, [fixedExpenses, canViewPersonal]);
+
+  const monthTransactions = useMemo(() => visibleTransactions.filter((item) => item.transaction_date?.startsWith(selectedMonth)), [visibleTransactions, selectedMonth]);
   const filteredTransactions = useMemo(() => {
     const query = transactionHistoryQuery.trim().toLowerCase();
-    return transactions
+    return visibleTransactions
       .filter((item) => transactionHistoryPeriod === "all" || item.transaction_date?.startsWith(selectedMonth))
       .filter((item) => transactionHistoryType === "all" || item.type === transactionHistoryType)
       .filter((item) => transactionHistoryScope === "all" || item.scope === transactionHistoryScope)
@@ -1165,9 +1176,9 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         ].some((value) => String(value ?? "").toLowerCase().includes(query));
       })
       .sort((a, b) => `${b.transaction_date ?? ""}${b.id}`.localeCompare(`${a.transaction_date ?? ""}${a.id}`));
-  }, [transactions, transactionHistoryPeriod, transactionHistoryType, transactionHistoryScope, transactionHistoryCategory, transactionHistoryQuery, selectedMonth, accounts, members, categories]);
+  }, [visibleTransactions, transactionHistoryPeriod, transactionHistoryType, transactionHistoryScope, transactionHistoryCategory, transactionHistoryQuery, selectedMonth, accounts, members, categories]);
   const monthBudgets = useMemo(() => budgets.filter((item) => item.budget_month?.startsWith(selectedMonth)), [budgets, selectedMonth]);
-  const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => fixedOccurrenceInMonth(item, selectedMonth)), [fixedExpenses, selectedMonth]);
+  const monthFixedExpenses = useMemo(() => visibleFixedExpenses.filter((item) => fixedOccurrenceInMonth(item, selectedMonth)), [visibleFixedExpenses, selectedMonth]);
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
   const upcomingEvents = useMemo(() => {
     const now = today();
@@ -1227,7 +1238,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     upcomingAnniversaries.forEach((anniversary) => {
       if (anniversary.diffDays <= 60) rows.push({ id: `anniversary-${anniversary.id}`, type: "기념일", date: anniversary.next_date, title: anniversary.title, dday: anniversary.diffDays });
     });
-    fixedExpenses.filter((item) => item.is_active).forEach((item) => {
+    visibleFixedExpenses.filter((item) => item.is_active).forEach((item) => {
       const nextDate = nextFixedExpenseDate(item, now);
       if (!nextDate) return;
       const dday = daysBetween(now, nextDate);
@@ -1240,14 +1251,14 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       if (dday <= 14) rows.push({ id: `task-${task.id}`, type: "할 일", date: nextDate, title: task.title, dday, memo: memberName(task.assigned_to_member_id) });
     });
     return rows.sort((a, b) => a.dday - b.dday).slice(0, 12);
-  }, [calendarEvents, upcomingAnniversaries, fixedExpenses, tasks, members]);
+  }, [calendarEvents, upcomingAnniversaries, visibleFixedExpenses, tasks, members]);
 
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
     const match = (...values: Array<string | number | null | undefined>) => values.some((value) => String(value ?? "").toLowerCase().includes(query));
     const rows: Array<{ id: string; type: string; title: string; detail: string; tab: typeof activeTab }> = [];
-    transactions.forEach((item) => { if (match(item.title, item.memo, item.amount, categoryName(item.category_id), memberName(item.paid_by_member_id))) rows.push({ id: `transaction-${item.id}`, type: "거래", title: item.title, detail: `${item.transaction_date} · ${currency(item.amount)} · ${categoryName(item.category_id)}`, tab: "finance" }); });
+    visibleTransactions.forEach((item) => { if (match(item.title, item.memo, item.amount, categoryName(item.category_id), memberName(item.paid_by_member_id))) rows.push({ id: `transaction-${item.id}`, type: "거래", title: item.title, detail: `${item.transaction_date} · ${currency(item.amount)} · ${categoryName(item.category_id)}`, tab: "finance" }); });
     calendarEvents.forEach((item) => { if (match(item.title, item.memo, item.event_date, memberName(item.assigned_to_member_id))) rows.push({ id: `event-${item.id}`, type: "일정", title: item.title, detail: `${item.event_date} ${item.event_time ?? ""}`, tab: "calendar" }); });
     anniversaryEvents.forEach((item) => { if (match(item.title, item.memo, item.anniversary_date, memberName(item.member_id))) rows.push({ id: `anniversary-${item.id}`, type: "기념일", title: item.title, detail: item.anniversary_date, tab: "calendar" }); });
     diaryEntries.forEach((item) => { if (match(item.title, item.content, item.diary_date, memberName(item.author_member_id))) rows.push({ id: `diary-${item.id}`, type: "다이어리", title: item.title, detail: `${item.diary_date} · ${moodLabel(item.mood)}`, tab: "diary" }); });
@@ -1255,7 +1266,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     tasks.forEach((item) => { if (match(item.title, item.memo, item.due_date, memberName(item.assigned_to_member_id))) rows.push({ id: `task-${item.id}`, type: "할 일", title: item.title, detail: `${item.due_date ?? "날짜 없음"} · ${memberName(item.assigned_to_member_id)}`, tab: "life" }); });
     goals.forEach((item) => { if (match(item.title, item.memo, item.target_amount, item.current_amount)) rows.push({ id: `goal-${item.id}`, type: "목표", title: item.title, detail: `${currency(item.current_amount)} / ${currency(item.target_amount)}`, tab: "life" }); });
     return rows.slice(0, 50);
-  }, [searchQuery, transactions, calendarEvents, anniversaryEvents, diaryEntries, shoppingItems, tasks, goals, categories, members]);
+  }, [searchQuery, visibleTransactions, calendarEvents, anniversaryEvents, diaryEntries, shoppingItems, tasks, goals, categories, members]);
 
   const photoAlbumGroups = useMemo(() => {
     return diaryEntries
@@ -1380,7 +1391,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   });
 
   const downloadBackup = () => {
-    if (!selectedGroupId || !selectedGroup || !requireAdmin()) return;
+    if (!selectedGroupId || !selectedGroup) return;
+    if (!isOwner) return showNotice({ type: "error", text: "개인 지출이 포함될 수 있어 백업은 소유자만 가능합니다." });
     const payload = buildBackupPayload();
     const safeGroupName = selectedGroup.name.replace(/[^a-zA-Z0-9가-힣_-]/g, "_").slice(0, 30) || "group";
     const fileName = `together-life-backup-${safeGroupName}-${today()}.json`;
@@ -1416,7 +1428,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const restoreBackup = async () => {
-    if (!supabase || !selectedGroupId || !backupPreview || !requireAdmin()) return;
+    if (!supabase || !selectedGroupId || !backupPreview) return;
+    if (!isOwner) return showNotice({ type: "error", text: "복원은 소유자만 가능합니다." });
     const totalRows = Object.values(backupPreview.tables).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
     if (totalRows === 0) return showNotice({ type: "info", text: "복원할 데이터가 없습니다." });
     if (!window.confirm(`현재 선택한 그룹에 백업 데이터 ${totalRows.toLocaleString("ko-KR")}건을 복원할까요? 같은 ID의 데이터는 갱신됩니다.`)) return;
@@ -1467,12 +1480,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return date.toISOString().slice(0, 7);
     });
     const rows = months.map((month) => {
-      const total = transactions.filter((item) => item.transaction_date?.startsWith(month) && item.type === "expense").reduce((sum, item) => sum + Number(item.amount), 0);
+      const total = visibleTransactions.filter((item) => item.transaction_date?.startsWith(month) && item.type === "expense").reduce((sum, item) => sum + Number(item.amount), 0);
       return { month, total };
     });
     const max = Math.max(...rows.map((row) => row.total), 1);
     return rows.map((row) => ({ ...row, percent: Math.max(4, Math.round((row.total / max) * 100)) }));
-  }, [transactions, selectedMonth]);
+  }, [visibleTransactions, selectedMonth]);
 
   if (groups.length === 0) {
     return (
@@ -1508,7 +1521,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         <div className="role-box">
           <span>내 권한</span>
           <strong>{roleLabel(currentRole)}</strong>
-          <small>{canAdmin ? "관리 기능 사용 가능" : canEdit ? "생활 입력 가능" : "조회 전용"}</small>
+          <small>{canViewPersonal ? "전체 내용 확인 가능" : canAdmin ? "관리 기능 사용 가능 · 개인 지출 숨김" : canEdit ? "생활 입력 가능 · 개인 지출 숨김" : "조회 전용 · 개인 지출 숨김"}</small>
         </div>
 
         <div className="sidebar-note">
@@ -1551,7 +1564,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <SummaryCard title="변동 지출" value={currency(summary.variableExpense)} tone="red" />
               <SummaryCard title="고정비" value={currency(summary.fixedExpense)} tone="orange" />
               <SummaryCard title="공동 지출" value={currency(summary.sharedExpense)} tone="blue" />
-              <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />
+              {canViewPersonal && <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />}
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
               <SummaryCard title="이번 달 일정" value={`${selectedMonthEvents.length}건`} tone="blue" />
               <SummaryCard title="이번 달 다이어리" value={`${selectedMonthDiaryEntries.length}건`} tone="purple" />
@@ -1608,7 +1621,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <SummaryCard title="변동 지출" value={currency(summary.variableExpense)} tone="red" />
               <SummaryCard title="고정비" value={currency(summary.fixedExpense)} tone="orange" />
               <SummaryCard title="공동 지출" value={currency(summary.sharedExpense)} tone="blue" />
-              <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />
+              {canViewPersonal && <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />}
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
             </section>
 
@@ -1618,7 +1631,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <input value={transactionForm.title} onChange={(event) => setTransactionForm({ ...transactionForm, title: event.target.value })} placeholder="내용" disabled={!canEdit} />
                   <div className="form-row">
                     <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"] })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option><option value="transfer">이체</option></select>
-                    <select value={transactionForm.scope} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit}><option value="shared">공동</option><option value="personal">개인</option></select>
+                    <select value={canViewPersonal ? transactionForm.scope : "shared"} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select>
                   </div>
                   <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canEdit} /></div>
                   <select value={transactionForm.account_id} onChange={(event) => setTransactionForm({ ...transactionForm, account_id: event.target.value })} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
@@ -1634,7 +1647,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <Card title="고정비" description="보험, 통신비, 구독료처럼 반복되는 지출입니다.">
                 <form className="stack-form" onSubmit={addFixedExpense}>
                   <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" disabled={!canAdmin} />
-                  <div className="form-row"><select value={fixedForm.scope} onChange={(event) => setFixedForm({ ...fixedForm, scope: event.target.value as "shared" | "personal" })} disabled={!canAdmin}><option value="shared">공동</option><option value="personal">개인</option></select><select value={fixedForm.paid_by_member_id} onChange={(event) => setFixedForm({ ...fixedForm, paid_by_member_id: event.target.value })} disabled={!canAdmin}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
+                  <div className="form-row"><select value={canViewPersonal ? fixedForm.scope : "shared"} onChange={(event) => setFixedForm({ ...fixedForm, scope: event.target.value as "shared" | "personal" })} disabled={!canAdmin || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select><select value={fixedForm.paid_by_member_id} onChange={(event) => setFixedForm({ ...fixedForm, paid_by_member_id: event.target.value })} disabled={!canAdmin}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
                   <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canAdmin} /></div>
                   <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canAdmin}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canAdmin} /> 반복 사용</label>
@@ -1642,7 +1655,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
                   <button disabled={!canAdmin}>고정비 저장</button>
                 </form>
-                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {(item.scope ?? "shared") === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{visibleFixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {(item.scope ?? "shared") === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
@@ -1708,7 +1721,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
             <section className="grid two">
               <Card title="최근 거래내역" description="최근 5건만 빠르게 확인합니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
@@ -1739,9 +1752,9 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     <option value="transfer">이체</option>
                   </select>
                   <select value={transactionHistoryScope} onChange={(event) => setTransactionHistoryScope(event.target.value as "all" | "shared" | "personal")}>
-                    <option value="all">공동/개인 전체</option>
+                    <option value="all">{canViewPersonal ? "공동/개인 전체" : "공동만"}</option>
                     <option value="shared">공동</option>
-                    <option value="personal">개인</option>
+                    {canViewPersonal && <option value="personal">개인</option>}
                   </select>
                   <select value={transactionHistoryCategory} onChange={(event) => setTransactionHistoryCategory(event.target.value)}>
                     <option value="">전체 카테고리</option>
@@ -2046,7 +2059,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <div className="stack-form">
                   <p className="line-item">백업 대상: 구성원, 카테고리, 계좌, 예산, 거래내역, 고정비, 일정, 기념일, 다이어리, 사진 정보, 장보기, 할 일, 목표, 정산 기록</p>
                   <p className="line-item">사진 파일 자체는 포함하지 않고 Supabase Storage 경로와 URL 정보만 저장합니다.</p>
-                  <button type="button" onClick={downloadBackup} disabled={!canAdmin}>현재 그룹 백업 다운로드</button>
+                  <button type="button" onClick={downloadBackup} disabled={!isOwner}>현재 그룹 백업 다운로드</button>
                   <input key={restoreInputKey} type="file" accept="application/json,.json" onChange={handleBackupFile} disabled={!canAdmin} />
                   {backupPreview && (
                     <div className="backup-preview">
@@ -2058,7 +2071,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                           <span key={tableName}>{backupTableLabels[tableName] ?? tableName}: {(backupPreview.tables[tableName] ?? []).length}건</span>
                         ))}
                       </div>
-                      <button type="button" className="secondary" onClick={restoreBackup} disabled={!canAdmin || loading}>미리보기 데이터 복원 실행</button>
+                      <button type="button" className="secondary" onClick={restoreBackup} disabled={!isOwner || loading}>미리보기 데이터 복원 실행</button>
                     </div>
                   )}
                 </div>
