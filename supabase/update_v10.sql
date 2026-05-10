@@ -1,0 +1,3 @@
+-- Together Life v10 안내
+-- v10은 공동 가계부 세부내용 입력 및 거래 수정 시 카테고리 수정 기능을 추가한 프론트엔드 업데이트입니다.
+-- 기존 transactions.memo, transactions.category_id 컬럼을 사용하므로 Supabase SQL 실행은 필요 없습니다.

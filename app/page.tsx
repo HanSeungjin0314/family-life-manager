@@ -794,6 +794,24 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return next.trim() || null;
   };
 
+  const askCategoryId = (currentCategoryId: string | null | undefined) => {
+    const categoryLines = categories.map((category, index) => `${index + 1}. ${category.name} (${category.type === "income" ? "수입" : "지출"})`).join("\n");
+    const currentIndex = categories.findIndex((category) => category.id === currentCategoryId);
+    const next = window.prompt(
+      `카테고리를 수정하세요.\n번호를 입력하거나 카테고리명을 입력하세요.\n빈칸으로 저장하면 미분류로 변경됩니다.\n\n${categoryLines || "등록된 카테고리가 없습니다."}`,
+      currentIndex >= 0 ? String(currentIndex + 1) : ""
+    );
+    if (next === null) return undefined;
+    const trimmed = next.trim();
+    if (!trimmed) return null;
+    const index = Number(trimmed) - 1;
+    if (Number.isInteger(index) && categories[index]) return categories[index].id;
+    const matched = categories.find((category) => category.name === trimmed || category.id === trimmed);
+    if (matched) return matched.id;
+    showNotice({ type: "error", text: "일치하는 카테고리를 찾지 못했습니다." });
+    return undefined;
+  };
+
   const editMemberName = async (member: GroupMember) => {
     if (member.role === "owner" && !isOwner) return showNotice({ type: "error", text: "owner 이름은 소유자만 수정할 수 있습니다." });
     const displayName = askText("구성원 이름을 수정하세요.", member.display_name);
@@ -836,7 +854,17 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (amount === null) return;
     const transactionDate = askDate("거래일을 수정하세요. 예: 2026-05-10", item.transaction_date);
     if (!transactionDate) return;
-    await updateRow("transactions", item.id, { title, amount, transaction_date: transactionDate });
+    const categoryId = askCategoryId(item.category_id);
+    if (categoryId === undefined) return;
+    const memo = window.prompt("세부내용을 수정하세요.", item.memo ?? "");
+    if (memo === null) return;
+    await updateRow("transactions", item.id, {
+      title,
+      amount,
+      transaction_date: transactionDate,
+      category_id: categoryId,
+      memo: memo.trim() || null
+    });
   };
 
   const editFixedExpense = async (item: FixedExpense) => {
@@ -846,8 +874,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (amount === null) return;
     const nextPaymentDate = askDate("첫 지출일 또는 다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
     if (!nextPaymentDate) return;
-    const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?
-확인 = 반복함 / 취소 = 한 번만");
+    const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?\n확인 = 반복함 / 취소 = 한 번만");
     let repeatType = "none";
     let repeatUntil: string | null = null;
     if (repeatEnabled) {
@@ -1372,6 +1399,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   </div>
                   <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canEdit} /></div>
                   <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <textarea rows={3} value={transactionForm.memo} onChange={(event) => setTransactionForm({ ...transactionForm, memo: event.target.value })} placeholder="세부내용: 사용처, 메모, 영수증 정보 등을 적어두세요." disabled={!canEdit} />
                   <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   <label className="check-line"><input type="checkbox" checked={transactionForm.settlement_required} onChange={(event) => setTransactionForm({ ...transactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>
                   <button disabled={!canEdit}>거래 저장</button>
@@ -1440,7 +1468,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
             <section className="grid two">
               <Card title="최근 거래내역" description="수입·지출·이체 내역입니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>

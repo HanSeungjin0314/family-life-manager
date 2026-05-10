@@ -1,6 +1,6 @@
 {
-  "name": "family-life-manager-v9",
-  "version": "9.0.0",
+  "name": "family-life-manager-v10",
+  "version": "10.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

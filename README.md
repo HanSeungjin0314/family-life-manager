@@ -57,3 +57,11 @@ git push
 - 종료일이 지난 고정비는 알림과 월별 합계 계산에서 제외
 
 기존 v8에서 업데이트하는 경우 Supabase SQL Editor에서 `supabase/update_v9.sql`을 한 번 실행하세요.
+
+
+## v10 추가 기능
+
+- 공동 가계부 입력 화면에 세부내용 입력칸을 추가했습니다.
+- 거래 수정 시 카테고리와 세부내용도 함께 수정할 수 있습니다.
+- 거래내역 표에서 세부내용을 바로 확인할 수 있습니다.
+- Supabase DB 변경은 없습니다. 기존 `transactions.memo`와 `transactions.category_id`를 사용합니다.
