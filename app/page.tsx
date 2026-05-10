@@ -57,6 +57,11 @@ const thisMonth = () => today().slice(0, 7);
 const monthStart = (month: string) => `${month}-01`;
 const currency = (value: number | string | null | undefined) => `${Number(value ?? 0).toLocaleString("ko-KR")}원`;
 const asNumber = (value: string) => Number(String(value).replaceAll(",", "")) || 0;
+const formatMoneyInput = (value: string) => {
+  const onlyNumbers = String(value).replace(/[^0-9]/g, "");
+  if (!onlyNumbers) return "";
+  return Number(onlyNumbers).toLocaleString("ko-KR");
+};
 const monthLabel = (month: string) => month.replace("-", "년 ") + "월";
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
 
@@ -513,6 +518,146 @@ function FamilyLifeApp({ session }: { session: Session }) {
     await fetchGroupData(selectedGroupId);
   };
 
+  const updateRow = async (table: string, id: string, patch: Record<string, unknown>, adminOnly = false) => {
+    if (!supabase || !selectedGroupId) return;
+    if (adminOnly && !requireAdmin()) return;
+    if (!adminOnly && !requireEdit()) return;
+    const { error } = await supabase.from(table).update(patch).eq("id", id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "수정했습니다." });
+  };
+
+  const askText = (label: string, current: string | null | undefined) => {
+    const next = window.prompt(label, current ?? "");
+    if (next === null) return null;
+    const trimmed = next.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const askMoney = (label: string, current: number | string | null | undefined) => {
+    const next = window.prompt(label, formatMoneyInput(String(current ?? 0)));
+    if (next === null) return null;
+    return asNumber(next);
+  };
+
+  const askDate = (label: string, current: string | null | undefined) => {
+    const next = window.prompt(label, current ?? today());
+    if (next === null) return null;
+    return next.trim() || null;
+  };
+
+  const editMemberName = async (member: GroupMember) => {
+    if (member.role === "owner" && !isOwner) return showNotice({ type: "error", text: "owner 이름은 소유자만 수정할 수 있습니다." });
+    const displayName = askText("구성원 이름을 수정하세요.", member.display_name);
+    if (!displayName) return;
+    await updateRow("group_members", member.id, { display_name: displayName }, true);
+  };
+
+  const editInviteMemo = async (invite: GroupInvite) => {
+    const memo = window.prompt("초대코드 메모를 수정하세요.", invite.memo ?? "");
+    if (memo === null) return;
+    await updateRow("group_invites", invite.id, { memo: memo.trim() || null }, true);
+  };
+
+  const editCategory = async (category: Category) => {
+    const name = askText("카테고리 이름을 수정하세요.", category.name);
+    if (!name) return;
+    await updateRow("categories", category.id, { name }, true);
+  };
+
+  const editAccount = async (account: Account) => {
+    const name = askText("계좌명을 수정하세요.", account.name);
+    if (!name) return;
+    const balance = askMoney("잔액을 수정하세요.", account.balance);
+    if (balance === null) return;
+    await updateRow("accounts", account.id, { name, balance }, true);
+  };
+
+  const editBudget = async (budget: Budget) => {
+    const name = askText("예산명을 수정하세요.", budget.name);
+    if (!name) return;
+    const limitAmount = askMoney("예산 한도를 수정하세요.", budget.limit_amount);
+    if (limitAmount === null) return;
+    await updateRow("budgets", budget.id, { name, limit_amount: limitAmount }, true);
+  };
+
+  const editTransaction = async (item: Transaction) => {
+    const title = askText("거래 내용을 수정하세요.", item.title);
+    if (!title) return;
+    const amount = askMoney("금액을 수정하세요.", item.amount);
+    if (amount === null) return;
+    const transactionDate = askDate("거래일을 수정하세요. 예: 2026-05-10", item.transaction_date);
+    if (!transactionDate) return;
+    await updateRow("transactions", item.id, { title, amount, transaction_date: transactionDate });
+  };
+
+  const editFixedExpense = async (item: FixedExpense) => {
+    const title = askText("고정비 이름을 수정하세요.", item.title);
+    if (!title) return;
+    const amount = askMoney("금액을 수정하세요.", item.amount);
+    if (amount === null) return;
+    const nextPaymentDate = askDate("다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
+    await updateRow("fixed_expenses", item.id, { title, amount, next_payment_date: nextPaymentDate }, true);
+  };
+
+  const editTask = async (task: Task) => {
+    const title = askText("할 일을 수정하세요.", task.title);
+    if (!title) return;
+    const dueDate = askDate("마감일을 수정하세요. 예: 2026-05-10", task.due_date ?? today());
+    await updateRow("tasks", task.id, { title, due_date: dueDate });
+  };
+
+  const editShoppingItem = async (item: ShoppingItem) => {
+    const itemName = askText("장보기 품목을 수정하세요.", item.item_name);
+    if (!itemName) return;
+    const quantity = window.prompt("수량을 수정하세요.", item.quantity ?? "");
+    if (quantity === null) return;
+    await updateRow("shopping_items", item.id, { item_name: itemName, quantity: quantity.trim() || null });
+  };
+
+  const editGoal = async (goal: Goal) => {
+    const title = askText("목표명을 수정하세요.", goal.title);
+    if (!title) return;
+    const currentAmount = askMoney("현재 금액을 수정하세요.", goal.current_amount);
+    if (currentAmount === null) return;
+    const targetAmount = askMoney("목표 금액을 수정하세요.", goal.target_amount);
+    if (targetAmount === null) return;
+    await updateRow("goals", goal.id, { title, current_amount: currentAmount, target_amount: targetAmount });
+  };
+
+  const editCalendarEvent = async (item: CalendarEvent) => {
+    const title = askText("일정명을 수정하세요.", item.title);
+    if (!title) return;
+    const eventDate = askDate("일정 날짜를 수정하세요. 예: 2026-05-10", item.event_date);
+    if (!eventDate) return;
+    const eventTime = window.prompt("일정 시간을 수정하세요. 예: 18:30", item.event_time ?? "");
+    if (eventTime === null) return;
+    await updateRow("calendar_events", item.id, { title, event_date: eventDate, event_time: eventTime.trim() || null });
+  };
+
+  const editAnniversary = async (item: AnniversaryEvent) => {
+    const title = askText("기념일명을 수정하세요.", item.title);
+    if (!title) return;
+    const anniversaryDate = askDate("기념일 날짜를 수정하세요. 예: 2026-05-10", item.anniversary_date);
+    if (!anniversaryDate) return;
+    await updateRow("anniversary_events", item.id, { title, anniversary_date: anniversaryDate });
+  };
+
+  const editDiaryEntry = async (diary: DiaryEntry) => {
+    const title = askText("다이어리 제목을 수정하세요.", diary.title);
+    if (!title) return;
+    const content = window.prompt("다이어리 내용을 수정하세요.", diary.content ?? "");
+    if (content === null || !content.trim()) return;
+    await updateRow("diary_entries", diary.id, { title, content: content.trim() });
+  };
+
+  const editSettlementRecord = async (record: SettlementRecord) => {
+    const amount = askMoney("정산 금액을 수정하세요.", record.amount);
+    if (amount === null) return;
+    await updateRow("settlement_records", record.id, { amount });
+  };
+
   const removeRow = async (table: string, id: string, adminOnly = false) => {
     if (!supabase || !selectedGroupId) return;
     if (adminOnly && !requireAdmin()) return;
@@ -761,9 +906,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
               </Card>
 
               <Card title="다가오는 일정·기념일" description="이번 달에 바로 확인하면 되는 내용만 모아봤어요.">
-                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
-                <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
-                <div className="mini-section"><h4>이번 달 다이어리</h4><List compact>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.slice(0, 5).map((diary) => <li key={diary.id}><span>{diary.diary_date} · {diary.title}</span><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(anniversary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
+                <div className="mini-section"><h4>이번 달 다이어리</h4><List compact>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.slice(0, 5).map((diary) => <li key={diary.id}><span>{diary.diary_date} · {diary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editDiaryEntry(diary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
               </Card>
             </section>
           </>
@@ -788,7 +933,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                     <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"] })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option><option value="transfer">이체</option></select>
                     <select value={transactionForm.scope} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit}><option value="shared">공동</option><option value="personal">개인</option></select>
                   </div>
-                  <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="금액" disabled={!canEdit} /></div>
+                  <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canEdit} /></div>
                   <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   <label className="check-line"><input type="checkbox" checked={transactionForm.settlement_required} onChange={(event) => setTransactionForm({ ...transactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>
@@ -799,26 +944,27 @@ function FamilyLifeApp({ session }: { session: Session }) {
               <Card title="고정비" description="보험, 통신비, 구독료처럼 반복되는 지출입니다.">
                 <form className="stack-form" onSubmit={addFixedExpense}>
                   <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" disabled={!canAdmin} />
-                  <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: event.target.value })} placeholder="금액" disabled={!canAdmin} /></div>
+                  <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canAdmin} /></div>
                   <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canAdmin}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <button disabled={!canAdmin}>고정비 저장</button>
                 </form>
-                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {currency(item.amount)}</span><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></li>)}</List>
+                <List compact>{fixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {currency(item.amount)}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
                 <form className="stack-form" onSubmit={addAccount}>
                   <input value={accountForm.name} onChange={(event) => setAccountForm({ ...accountForm, name: event.target.value })} placeholder="계좌명" disabled={!canAdmin} />
-                  <div className="form-row"><select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })} disabled={!canAdmin}><option value="bank">입출금</option><option value="cash">현금</option><option value="credit_card">신용카드</option><option value="saving">저축</option></select><input value={accountForm.balance} onChange={(event) => setAccountForm({ ...accountForm, balance: event.target.value })} placeholder="잔액" disabled={!canAdmin} /></div>
+                  <div className="form-row"><select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })} disabled={!canAdmin}><option value="bank">입출금</option><option value="cash">현금</option><option value="credit_card">신용카드</option><option value="saving">저축</option></select><input value={accountForm.balance} onChange={(event) => setAccountForm({ ...accountForm, balance: formatMoneyInput(event.target.value) })} placeholder="잔액" disabled={!canAdmin} /></div>
                   <button className="secondary" disabled={!canAdmin}>계좌 추가</button>
                 </form>
-                <List compact>{accounts.slice(0, 4).map((account) => <li key={account.id}><span>{account.name} · {currency(account.balance)}</span><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></li>)}</List>
+                <List compact>{accounts.slice(0, 4).map((account) => <li key={account.id}><span>{account.name} · {currency(account.balance)}</span><div className="inline-actions"><button className="text-button" onClick={() => editAccount(account)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
                 <hr />
                 <form className="inline-form" onSubmit={addCategory}>
                   <input value={categoryForm.name} onChange={(event) => setCategoryForm({ ...categoryForm, name: event.target.value })} placeholder="카테고리" disabled={!canAdmin} />
                   <select value={categoryForm.type} onChange={(event) => setCategoryForm({ ...categoryForm, type: event.target.value })} disabled={!canAdmin}><option value="expense">지출</option><option value="income">수입</option></select>
                   <button className="secondary" disabled={!canAdmin}>추가</button>
                 </form>
+                <List compact>{categories.slice(0, 8).map((category) => <li key={category.id}><span>{category.name} · {category.type === "income" ? "수입" : "지출"}</span><div className="inline-actions"><button className="text-button" onClick={() => editCategory(category)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("categories", category.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
             </section>
 
@@ -829,17 +975,17 @@ function FamilyLifeApp({ session }: { session: Session }) {
                 </div>
                 <button className="secondary full gap-top" onClick={createSettlementSuggestions} disabled={!canEdit}>이번 달 정산 기록 생성</button>
                 <List>
-                  {monthSettlementRecords.slice(0, 8).map((record) => <li key={record.id}><span>{memberName(record.from_member_id)} → {memberName(record.to_member_id)} · {currency(record.amount)} · {record.status === "completed" ? "완료" : "대기"}</span><div className="inline-actions">{record.status !== "completed" && <button className="text-button" onClick={() => updateSettlementStatus(record.id, "completed")} disabled={!canEdit}>완료</button>}<button className="text-button danger-text" onClick={() => removeRow("settlement_records", record.id)} disabled={!canEdit}>삭제</button></div></li>)}
+                  {monthSettlementRecords.slice(0, 8).map((record) => <li key={record.id}><span>{memberName(record.from_member_id)} → {memberName(record.to_member_id)} · {currency(record.amount)} · {record.status === "completed" ? "완료" : "대기"}</span><div className="inline-actions">{record.status !== "completed" && <button className="text-button" onClick={() => updateSettlementStatus(record.id, "completed")} disabled={!canEdit}>완료</button>}<button className="text-button" onClick={() => editSettlementRecord(record)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("settlement_records", record.id)} disabled={!canEdit}>삭제</button></div></li>)}
                 </List>
               </Card>
 
               <Card title="이번 달 예산" description="월별 예산과 고정비를 관리합니다.">
                 <form className="stack-form" onSubmit={addBudget}>
                   <input value={budgetForm.name} onChange={(event) => setBudgetForm({ ...budgetForm, name: event.target.value })} placeholder="예산명" disabled={!canAdmin} />
-                  <div className="form-row"><input type="date" value={budgetForm.budget_month} onChange={(event) => setBudgetForm({ ...budgetForm, budget_month: event.target.value })} disabled={!canAdmin} /><input value={budgetForm.limit_amount} onChange={(event) => setBudgetForm({ ...budgetForm, limit_amount: event.target.value })} placeholder="한도" disabled={!canAdmin} /></div>
+                  <div className="form-row"><input type="date" value={budgetForm.budget_month} onChange={(event) => setBudgetForm({ ...budgetForm, budget_month: event.target.value })} disabled={!canAdmin} /><input value={budgetForm.limit_amount} onChange={(event) => setBudgetForm({ ...budgetForm, limit_amount: formatMoneyInput(event.target.value) })} placeholder="한도" disabled={!canAdmin} /></div>
                   <button className="secondary" disabled={!canAdmin}>예산 추가</button>
                 </form>
-                <List>{monthBudgets.map((budget) => <li key={budget.id}><span>{budget.name} · {currency(budget.limit_amount)}</span><button className="text-button danger-text" onClick={() => removeRow("budgets", budget.id, true)} disabled={!canAdmin}>삭제</button></li>)}</List>
+                <List>{monthBudgets.map((budget) => <li key={budget.id}><span>{budget.name} · {currency(budget.limit_amount)}</span><div className="inline-actions"><button className="text-button" onClick={() => editBudget(budget)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("budgets", budget.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </Card>
             </section>
 
@@ -854,18 +1000,18 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
             <section className="grid two">
               <Card title="최근 거래내역" description="수입·지출·이체 내역입니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
                   <input value={goalForm.title} onChange={(event) => setGoalForm({ ...goalForm, title: event.target.value })} placeholder="목표명" disabled={!canEdit} />
-                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: event.target.value })} placeholder="현재금액" disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: event.target.value })} placeholder="목표금액" disabled={!canEdit} /></div>
+                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: formatMoneyInput(event.target.value) })} placeholder="현재금액" disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: formatMoneyInput(event.target.value) })} placeholder="목표금액" disabled={!canEdit} /></div>
                   <button disabled={!canEdit}>목표 추가</button>
                 </form>
                 <div className="goal-list">
                   {goals.slice(0, 5).map((goal) => {
                     const percent = goal.target_amount > 0 ? Math.min(100, Math.round((Number(goal.current_amount) / Number(goal.target_amount)) * 100)) : 0;
-                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
+                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><div className="inline-actions"><button className="text-button" onClick={() => editGoal(goal)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
                   })}
                 </div>
               </Card>
@@ -891,8 +1037,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
               </Card>
 
               <Card title="다가오는 일정·기념일" description="가까운 일정과 반복 기념일을 빠르게 확인합니다.">
-                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
-                <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(anniversary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
               </Card>
             </section>
 
@@ -917,7 +1063,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   <textarea rows={3} value={anniversaryForm.memo} onChange={(event) => setAnniversaryForm({ ...anniversaryForm, memo: event.target.value })} placeholder="선물 아이디어, 장소, 메모" disabled={!canEdit} />
                   <button disabled={!canEdit}>기념일 추가</button>
                 </form>
-                <List compact>{anniversaryEvents.slice(0, 6).map((item) => <li key={item.id}><span>{item.anniversary_date.slice(5)} · {item.title} · {item.calendar_type === "lunar" ? "음력메모" : "양력"}</span><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", item.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+                <List compact>{anniversaryEvents.slice(0, 6).map((item) => <li key={item.id}><span>{item.anniversary_date.slice(5)} · {item.title} · {item.calendar_type === "lunar" ? "음력메모" : "양력"}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", item.id)} disabled={!canEdit}>삭제</button></div></li>)}</List>
               </Card>
             </section>
           </>
@@ -936,7 +1082,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
             </Card>
 
             <Card title="이번 달 다이어리" description="최근 작성한 기록을 모아봅니다.">
-              <List>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.map((diary) => <li key={diary.id}><span>{diary.diary_date} · {moodLabel(diary.mood)} · {diary.title} · {memberName(diary.author_member_id)}</span><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+              <List>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.map((diary) => <li key={diary.id}><span>{diary.diary_date} · {moodLabel(diary.mood)} · {diary.title} · {memberName(diary.author_member_id)}</span><div className="inline-actions"><button className="text-button" onClick={() => editDiaryEntry(diary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List>
             </Card>
           </section>
         )}
@@ -950,7 +1096,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   <input value={shoppingForm.quantity} onChange={(event) => setShoppingForm({ ...shoppingForm, quantity: event.target.value })} placeholder="수량" disabled={!canEdit} />
                   <button disabled={!canEdit}>추가</button>
                 </form>
-                <List>{shoppingItems.slice(0, 8).map((item) => <li key={item.id}><button className="text-button" onClick={() => toggleRow("shopping_items", item.id, item.is_done)} disabled={!canEdit}>{item.is_done ? "✅" : "⬜"}</button><span className={item.is_done ? "done" : ""}>{item.item_name} {item.quantity ? `· ${item.quantity}` : ""}</span><button className="text-button danger-text" onClick={() => removeRow("shopping_items", item.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+                <List>{shoppingItems.slice(0, 8).map((item) => <li key={item.id}><button className="text-button" onClick={() => toggleRow("shopping_items", item.id, item.is_done)} disabled={!canEdit}>{item.is_done ? "✅" : "⬜"}</button><span className={item.is_done ? "done" : ""}>{item.item_name} {item.quantity ? `· ${item.quantity}` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editShoppingItem(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("shopping_items", item.id)} disabled={!canEdit}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="할 일" description="집안일, 납부, 예약 등을 담당자와 함께 관리합니다.">
@@ -959,7 +1105,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   <div className="form-row"><select value={taskForm.assigned_to_member_id} onChange={(event) => setTaskForm({ ...taskForm, assigned_to_member_id: event.target.value })} disabled={!canEdit}><option value="">담당자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select><input type="date" value={taskForm.due_date} onChange={(event) => setTaskForm({ ...taskForm, due_date: event.target.value })} disabled={!canEdit} /></div>
                   <button disabled={!canEdit}>할 일 추가</button>
                 </form>
-                <List>{tasks.slice(0, 8).map((task) => <li key={task.id}><button className="text-button" onClick={() => toggleRow("tasks", task.id, task.is_done)} disabled={!canEdit}>{task.is_done ? "✅" : "⬜"}</button><span className={task.is_done ? "done" : ""}>{task.title} · {memberName(task.assigned_to_member_id)}</span><button className="text-button danger-text" onClick={() => removeRow("tasks", task.id)} disabled={!canEdit}>삭제</button></li>)}</List>
+                <List>{tasks.slice(0, 8).map((task) => <li key={task.id}><button className="text-button" onClick={() => toggleRow("tasks", task.id, task.is_done)} disabled={!canEdit}>{task.is_done ? "✅" : "⬜"}</button><span className={task.is_done ? "done" : ""}>{task.title} · {memberName(task.assigned_to_member_id)}</span><div className="inline-actions"><button className="text-button" onClick={() => editTask(task)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("tasks", task.id)} disabled={!canEdit}>삭제</button></div></li>)}</List>
               </Card>
             </section>
 
@@ -967,13 +1113,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
               <Card title="공동 목표" description="여행, 집, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
                   <input value={goalForm.title} onChange={(event) => setGoalForm({ ...goalForm, title: event.target.value })} placeholder="목표명" disabled={!canEdit} />
-                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: event.target.value })} placeholder="현재금액" disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: event.target.value })} placeholder="목표금액" disabled={!canEdit} /></div>
+                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: formatMoneyInput(event.target.value) })} placeholder="현재금액" disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: formatMoneyInput(event.target.value) })} placeholder="목표금액" disabled={!canEdit} /></div>
                   <button disabled={!canEdit}>목표 추가</button>
                 </form>
                 <div className="goal-list">
                   {goals.slice(0, 5).map((goal) => {
                     const percent = goal.target_amount > 0 ? Math.min(100, Math.round((Number(goal.current_amount) / Number(goal.target_amount)) * 100)) : 0;
-                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
+                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><div className="inline-actions"><button className="text-button" onClick={() => editGoal(goal)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
                   })}
                 </div>
               </Card>
@@ -1023,7 +1169,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                         <select value={member.role} onChange={(event) => updateMemberRole(member, event.target.value as Role)} disabled={!canAdmin || member.role === "owner"}>
                           <RoleOptions allowOwner />
                         </select>
-                        <button className="text-button danger-text" onClick={() => removeRow("group_members", member.id, true)} disabled={!canAdmin || member.role === "owner"}>삭제</button>
+                        <button className="text-button" onClick={() => editMemberName(member)} disabled={!canAdmin || member.role === "owner"}>이름수정</button><button className="text-button danger-text" onClick={() => removeRow("group_members", member.id, true)} disabled={!canAdmin || member.role === "owner"}>삭제</button>
                       </div>
                     </li>
                   ))}
@@ -1044,7 +1190,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
                   {invites.slice(0, 8).map((invite) => (
                     <li key={invite.id}>
                       <span><strong>{invite.code}</strong> · {roleLabel(invite.role)} · {invite.is_active ? "사용 가능" : "중지"}</span>
-                      <button className="text-button danger-text" onClick={() => removeRow("group_invites", invite.id, true)} disabled={!canAdmin}>삭제</button>
+                      <div className="inline-actions"><button className="text-button" onClick={() => editInviteMemo(invite)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("group_invites", invite.id, true)} disabled={!canAdmin}>삭제</button></div>
                     </li>
                   ))}
                 </List>
