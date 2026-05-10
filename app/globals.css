@@ -204,3 +204,13 @@ textarea { resize: vertical; min-height: 76px; }
 @media (max-width: 760px) {
   .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* v7 reminders / search / album additions */
+.album-list { display: grid; gap: 16px; }
+.album-item { background: #f9fafb; border: 1px solid var(--line); border-radius: 18px; padding: 14px; display: grid; gap: 12px; }
+.album-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.line-item strong { color: var(--primary-dark); }
+.tab-button { white-space: nowrap; }
+@media (max-width: 760px) {
+  .album-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

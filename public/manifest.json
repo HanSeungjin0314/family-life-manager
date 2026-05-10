@@ -1,0 +1,11 @@
+{
+  "name": "Together Life",
+  "short_name": "Together",
+  "description": "부부가 함께 쓰는 생활 관리 앱",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#4f46e5",
+  "lang": "ko",
+  "icons": []
+}

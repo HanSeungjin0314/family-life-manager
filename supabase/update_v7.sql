@@ -1,0 +1,5 @@
+-- Family Life Manager v7
+-- DB 구조 변경 없음.
+-- v7은 프론트 기능 보강 버전입니다.
+-- 추가 내용: 앱 안 알림 예정 목록, 반복 일정 계산, 전체 검색, 다이어리 사진 앨범, PWA manifest.
+-- Supabase SQL Editor에서 실행할 필요가 없습니다.

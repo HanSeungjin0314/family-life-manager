@@ -64,6 +64,31 @@ const formatMoneyInput = (value: string) => {
   return Number(onlyNumbers).toLocaleString("ko-KR");
 };
 const monthLabel = (month: string) => month.replace("-", "년 ") + "월";
+const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
+const daysBetween = (from: string, to: string) => Math.ceil((new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86400000);
+const nextDateForRepeat = (baseDate: string | null | undefined, repeatType: string | null | undefined, fromDate = today()) => {
+  if (!baseDate) return null;
+  const from = new Date(`${fromDate}T00:00:00`);
+  let next = new Date(`${baseDate}T00:00:00`);
+  if (!repeatType || repeatType === "none" || repeatType === "once") return next >= from ? dateOnly(next) : null;
+  if (repeatType === "daily") {
+    while (next < from) next.setDate(next.getDate() + 1);
+    return dateOnly(next);
+  }
+  if (repeatType === "weekly") {
+    while (next < from) next.setDate(next.getDate() + 7);
+    return dateOnly(next);
+  }
+  if (repeatType === "monthly") {
+    while (next < from) next.setMonth(next.getMonth() + 1);
+    return dateOnly(next);
+  }
+  if (repeatType === "yearly") {
+    while (next < from) next.setFullYear(next.getFullYear() + 1);
+    return dateOnly(next);
+  }
+  return next >= from ? dateOnly(next) : null;
+};
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
 const MAX_DIARY_PHOTOS = 5;
 const MAX_DIARY_PHOTO_SIZE_MB = 5;
@@ -183,7 +208,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [diaryPhotos, setDiaryPhotos] = useState<DiaryPhoto[]>([]);
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
-  const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "life" | "settings">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "search" | "settings">("home");
+  const [searchQuery, setSearchQuery] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -828,6 +854,55 @@ function FamilyLifeApp({ session }: { session: Session }) {
       .sort((a, b) => a.diffDays - b.diffDays)
       .slice(0, 8);
   }, [anniversaryEvents]);
+  const alertItems = useMemo(() => {
+    const now = today();
+    const rows: Array<{ id: string; type: string; date: string; title: string; dday: number; memo?: string }> = [];
+    calendarEvents.forEach((event) => {
+      const nextDate = nextDateForRepeat(event.event_date, event.repeat_type, now);
+      if (!nextDate) return;
+      const dday = daysBetween(now, nextDate);
+      if (dday <= 30) rows.push({ id: `event-${event.id}`, type: event.is_important ? "중요 일정" : "일정", date: nextDate, title: event.title, dday, memo: event.event_time ?? undefined });
+    });
+    upcomingAnniversaries.forEach((anniversary) => {
+      if (anniversary.diffDays <= 60) rows.push({ id: `anniversary-${anniversary.id}`, type: "기념일", date: anniversary.next_date, title: anniversary.title, dday: anniversary.diffDays });
+    });
+    fixedExpenses.filter((item) => item.is_active).forEach((item) => {
+      const nextDate = nextDateForRepeat(item.next_payment_date, item.repeat_type, now);
+      if (!nextDate) return;
+      const dday = daysBetween(now, nextDate);
+      if (dday <= 30) rows.push({ id: `fixed-${item.id}`, type: "고정비", date: nextDate, title: `${item.title} · ${currency(item.amount)}`, dday });
+    });
+    tasks.filter((task) => !task.is_done).forEach((task) => {
+      const nextDate = nextDateForRepeat(task.due_date, task.repeat_type, now);
+      if (!nextDate) return;
+      const dday = daysBetween(now, nextDate);
+      if (dday <= 14) rows.push({ id: `task-${task.id}`, type: "할 일", date: nextDate, title: task.title, dday, memo: memberName(task.assigned_to_member_id) });
+    });
+    return rows.sort((a, b) => a.dday - b.dday).slice(0, 12);
+  }, [calendarEvents, upcomingAnniversaries, fixedExpenses, tasks, members]);
+
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    const match = (...values: Array<string | number | null | undefined>) => values.some((value) => String(value ?? "").toLowerCase().includes(query));
+    const rows: Array<{ id: string; type: string; title: string; detail: string; tab: typeof activeTab }> = [];
+    transactions.forEach((item) => { if (match(item.title, item.memo, item.amount, categoryName(item.category_id), memberName(item.paid_by_member_id))) rows.push({ id: `transaction-${item.id}`, type: "거래", title: item.title, detail: `${item.transaction_date} · ${currency(item.amount)} · ${categoryName(item.category_id)}`, tab: "finance" }); });
+    calendarEvents.forEach((item) => { if (match(item.title, item.memo, item.event_date, memberName(item.assigned_to_member_id))) rows.push({ id: `event-${item.id}`, type: "일정", title: item.title, detail: `${item.event_date} ${item.event_time ?? ""}`, tab: "calendar" }); });
+    anniversaryEvents.forEach((item) => { if (match(item.title, item.memo, item.anniversary_date, memberName(item.member_id))) rows.push({ id: `anniversary-${item.id}`, type: "기념일", title: item.title, detail: item.anniversary_date, tab: "calendar" }); });
+    diaryEntries.forEach((item) => { if (match(item.title, item.content, item.diary_date, memberName(item.author_member_id))) rows.push({ id: `diary-${item.id}`, type: "다이어리", title: item.title, detail: `${item.diary_date} · ${moodLabel(item.mood)}`, tab: "diary" }); });
+    shoppingItems.forEach((item) => { if (match(item.item_name, item.quantity, item.memo)) rows.push({ id: `shopping-${item.id}`, type: "장보기", title: item.item_name, detail: item.quantity ?? "", tab: "life" }); });
+    tasks.forEach((item) => { if (match(item.title, item.memo, item.due_date, memberName(item.assigned_to_member_id))) rows.push({ id: `task-${item.id}`, type: "할 일", title: item.title, detail: `${item.due_date ?? "날짜 없음"} · ${memberName(item.assigned_to_member_id)}`, tab: "life" }); });
+    goals.forEach((item) => { if (match(item.title, item.memo, item.target_amount, item.current_amount)) rows.push({ id: `goal-${item.id}`, type: "목표", title: item.title, detail: `${currency(item.current_amount)} / ${currency(item.target_amount)}`, tab: "life" }); });
+    return rows.slice(0, 50);
+  }, [searchQuery, transactions, calendarEvents, anniversaryEvents, diaryEntries, shoppingItems, tasks, goals, categories, members]);
+
+  const photoAlbumGroups = useMemo(() => {
+    return diaryEntries
+      .filter((diary) => diaryPhotosFor(diary.id).length > 0)
+      .map((diary) => ({ diary, photos: diaryPhotosFor(diary.id) }))
+      .sort((a, b) => b.diary.diary_date.localeCompare(a.diary.diary_date));
+  }, [diaryEntries, diaryPhotos]);
+
   const calendarGrid = useMemo(() => {
     const firstDay = new Date(`${selectedMonth}-01T00:00:00`);
     const daysInMonth = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0).getDate();
@@ -997,7 +1072,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
           <button type="button" className={`tab-button ${activeTab === "finance" ? "active" : ""}`} onClick={() => setActiveTab("finance")}>가계부</button>
           <button type="button" className={`tab-button ${activeTab === "calendar" ? "active" : ""}`} onClick={() => setActiveTab("calendar")}>달력 · 기념일</button>
           <button type="button" className={`tab-button ${activeTab === "diary" ? "active" : ""}`} onClick={() => setActiveTab("diary")}>다이어리</button>
+          <button type="button" className={`tab-button ${activeTab === "album" ? "active" : ""}`} onClick={() => setActiveTab("album")}>사진앨범</button>
           <button type="button" className={`tab-button ${activeTab === "life" ? "active" : ""}`} onClick={() => setActiveTab("life")}>생활</button>
+          <button type="button" className={`tab-button ${activeTab === "search" ? "active" : ""}`} onClick={() => setActiveTab("search")}>검색</button>
           <button type="button" className={`tab-button ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>설정</button>
         </div>
 
@@ -1012,6 +1089,26 @@ function FamilyLifeApp({ session }: { session: Session }) {
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
               <SummaryCard title="이번 달 일정" value={`${selectedMonthEvents.length}건`} tone="blue" />
               <SummaryCard title="이번 달 다이어리" value={`${selectedMonthDiaryEntries.length}건`} tone="purple" />
+            </section>
+
+            <section className="grid two">
+              <Card title="다가오는 알림" description="일정, 기념일, 고정비, 할 일을 가까운 순서로 보여줍니다.">
+                <List compact>
+                  {alertItems.length === 0 && <li><span>앞으로 30일 안에 표시할 알림이 없습니다.</span></li>}
+                  {alertItems.map((item) => (
+                    <li key={item.id}>
+                      <span><strong>{item.type}</strong> · {item.date} · D-{item.dday} · {item.title}{item.memo ? ` · ${item.memo}` : ""}</span>
+                    </li>
+                  ))}
+                </List>
+              </Card>
+              <Card title="빠른 검색" description="다이어리, 일정, 거래, 장보기, 할 일을 한 번에 찾습니다.">
+                <div className="stack-form">
+                  <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="예: 병원, 데이트, 식비, 여행" />
+                  <button type="button" className="secondary" onClick={() => setActiveTab("search")}>검색 화면으로 이동</button>
+                  <p className="muted small">검색 결과 {searchResults.length}건</p>
+                </div>
+              </Card>
             </section>
 
             <section className="grid two">
@@ -1242,6 +1339,72 @@ function FamilyLifeApp({ session }: { session: Session }) {
                     </article>
                   );
                 })}
+              </div>
+            </Card>
+          </section>
+        )}
+
+        {activeTab === "album" && (
+          <section className="grid two">
+            <Card title="다이어리 사진앨범" description="사진이 첨부된 다이어리를 날짜순으로 모아봅니다.">
+              <div className="album-list">
+                {photoAlbumGroups.length === 0 && <p className="muted">아직 사진이 첨부된 다이어리가 없습니다.</p>}
+                {photoAlbumGroups.map(({ diary, photos }) => (
+                  <article className="album-item" key={diary.id}>
+                    <div className="between">
+                      <div>
+                        <strong>{diary.diary_date} · {diary.title}</strong>
+                        <p className="muted small">{moodLabel(diary.mood)} · {memberName(diary.author_member_id)} · 사진 {photos.length}장</p>
+                      </div>
+                      <button className="text-button" onClick={() => { setActiveTab("diary"); setSelectedMonth(diary.diary_date.slice(0, 7)); }}>다이어리 보기</button>
+                    </div>
+                    <div className="photo-grid album-grid">
+                      {photos.map((photo) => (
+                        <figure key={photo.id} className="photo-thumb">
+                          <img src={photo.public_url} alt={photo.file_name ?? diary.title} />
+                          <button type="button" onClick={() => removeDiaryPhoto(photo)} disabled={!canEdit}>삭제</button>
+                        </figure>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </Card>
+
+            <Card title="앨범 사용 안내" description="다이어리에 올린 사진을 추억 앨범처럼 확인합니다.">
+              <div className="stack-form">
+                <p className="line-item">사진은 다이어리 1개당 최대 {MAX_DIARY_PHOTOS}장까지 첨부됩니다.</p>
+                <p className="line-item">현재 첨부된 전체 사진은 {diaryPhotos.length}장입니다.</p>
+                <p className="line-item">사진을 더 올리려면 다이어리 탭에서 기존 다이어리의 사진추가 버튼을 누르세요.</p>
+              </div>
+            </Card>
+          </section>
+        )}
+
+        {activeTab === "search" && (
+          <section className="grid two">
+            <Card title="전체 검색" description="거래, 일정, 기념일, 다이어리, 장보기, 할 일, 목표를 한 번에 검색합니다.">
+              <div className="stack-form">
+                <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="검색어를 입력하세요. 예: 병원, 데이트, 식비, 여행" />
+                <p className="muted small">검색 결과 {searchResults.length}건</p>
+              </div>
+              <List>
+                {!searchQuery.trim() && <li><span>검색어를 입력하면 결과가 표시됩니다.</span></li>}
+                {searchQuery.trim() && searchResults.length === 0 && <li><span>검색 결과가 없습니다.</span></li>}
+                {searchResults.map((item) => (
+                  <li key={item.id}>
+                    <span><strong>{item.type}</strong> · {item.title} · {item.detail}</span>
+                    <button className="text-button" onClick={() => setActiveTab(item.tab)}>이동</button>
+                  </li>
+                ))}
+              </List>
+            </Card>
+
+            <Card title="검색 팁" description="기록이 쌓일수록 검색 기능이 중요합니다.">
+              <div className="stack-form">
+                <p className="line-item">다이어리 내용까지 검색됩니다.</p>
+                <p className="line-item">거래 금액, 카테고리, 결제자도 검색됩니다.</p>
+                <p className="line-item">병원, 여행, 데이트처럼 키워드 중심으로 적어두면 나중에 찾기 쉽습니다.</p>
               </div>
             </Card>
           </section>
