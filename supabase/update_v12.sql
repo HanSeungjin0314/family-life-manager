@@ -1,0 +1,3 @@
+-- Together Life v12 안내용 SQL
+-- 전체 거래내역 기능은 기존 transactions 테이블을 사용하므로 DB 변경이 없습니다.
+-- Supabase SQL 실행이 필요 없습니다.

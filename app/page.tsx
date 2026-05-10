@@ -319,6 +319,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
   const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "search" | "settings">("home");
   const [searchQuery, setSearchQuery] = useState("");
+  const [transactionHistoryPeriod, setTransactionHistoryPeriod] = useState<"month" | "all">("month");
+  const [transactionHistoryType, setTransactionHistoryType] = useState<"all" | "income" | "expense" | "transfer">("all");
+  const [transactionHistoryScope, setTransactionHistoryScope] = useState<"all" | "shared" | "personal">("all");
+  const [transactionHistoryCategory, setTransactionHistoryCategory] = useState("");
+  const [transactionHistoryQuery, setTransactionHistoryQuery] = useState("");
   const [backupPreview, setBackupPreview] = useState<BackupPayload | null>(null);
   const [backupFileName, setBackupFileName] = useState("");
   const [restoreInputKey, setRestoreInputKey] = useState(0);
@@ -398,7 +403,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
       supabase.from("categories").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
       supabase.from("accounts").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("budgets").select("*").eq("group_id", groupId).order("budget_month", { ascending: false }),
-      supabase.from("transactions").select("*").eq("group_id", groupId).order("transaction_date", { ascending: false }).limit(200),
+      supabase.from("transactions").select("*").eq("group_id", groupId).order("transaction_date", { ascending: false }).limit(1000),
       supabase.from("fixed_expenses").select("*").eq("group_id", groupId).order("next_payment_date", { ascending: true }),
       supabase.from("tasks").select("*").eq("group_id", groupId).order("due_date", { ascending: true }),
       supabase.from("shopping_items").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
@@ -1056,6 +1061,27 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const monthTransactions = useMemo(() => transactions.filter((item) => item.transaction_date?.startsWith(selectedMonth)), [transactions, selectedMonth]);
+  const filteredTransactions = useMemo(() => {
+    const query = transactionHistoryQuery.trim().toLowerCase();
+    return transactions
+      .filter((item) => transactionHistoryPeriod === "all" || item.transaction_date?.startsWith(selectedMonth))
+      .filter((item) => transactionHistoryType === "all" || item.type === transactionHistoryType)
+      .filter((item) => transactionHistoryScope === "all" || item.scope === transactionHistoryScope)
+      .filter((item) => !transactionHistoryCategory || item.category_id === transactionHistoryCategory)
+      .filter((item) => {
+        if (!query) return true;
+        return [
+          item.title,
+          item.memo,
+          item.amount,
+          accountName(item.account_id),
+          memberName(item.paid_by_member_id),
+          categoryName(item.category_id),
+          item.transaction_date
+        ].some((value) => String(value ?? "").toLowerCase().includes(query));
+      })
+      .sort((a, b) => `${b.transaction_date ?? ""}${b.id}`.localeCompare(`${a.transaction_date ?? ""}${a.id}`));
+  }, [transactions, transactionHistoryPeriod, transactionHistoryType, transactionHistoryScope, transactionHistoryCategory, transactionHistoryQuery, selectedMonth, accounts, members, categories]);
   const monthBudgets = useMemo(() => budgets.filter((item) => item.budget_month?.startsWith(selectedMonth)), [budgets, selectedMonth]);
   const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => fixedOccurrenceInMonth(item, selectedMonth)), [fixedExpenses, selectedMonth]);
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
@@ -1557,8 +1583,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
             </section>
 
             <section className="grid two">
-              <Card title="최근 거래내역" description="수입·지출·이체 내역입니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+              <Card title="최근 거래내역" description="최근 5건만 빠르게 확인합니다.">
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
@@ -1572,6 +1598,41 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><div className="inline-actions"><button className="text-button" onClick={() => editGoal(goal)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
                   })}
                 </div>
+              </Card>
+            </section>
+
+            <section className="grid">
+              <Card title="전체 거래내역" description="기존 입력 내역을 기간, 유형, 범위, 카테고리, 검색어로 확인합니다.">
+                <div className="history-filter">
+                  <select value={transactionHistoryPeriod} onChange={(event) => setTransactionHistoryPeriod(event.target.value as "month" | "all")}>
+                    <option value="month">기준 월만 보기</option>
+                    <option value="all">전체 기간 보기</option>
+                  </select>
+                  <select value={transactionHistoryType} onChange={(event) => setTransactionHistoryType(event.target.value as "all" | "income" | "expense" | "transfer")}>
+                    <option value="all">전체 유형</option>
+                    <option value="income">수입</option>
+                    <option value="expense">지출</option>
+                    <option value="transfer">이체</option>
+                  </select>
+                  <select value={transactionHistoryScope} onChange={(event) => setTransactionHistoryScope(event.target.value as "all" | "shared" | "personal")}>
+                    <option value="all">공동/개인 전체</option>
+                    <option value="shared">공동</option>
+                    <option value="personal">개인</option>
+                  </select>
+                  <select value={transactionHistoryCategory} onChange={(event) => setTransactionHistoryCategory(event.target.value)}>
+                    <option value="">전체 카테고리</option>
+                    {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                  </select>
+                  <input value={transactionHistoryQuery} onChange={(event) => setTransactionHistoryQuery(event.target.value)} placeholder="내용, 세부내용, 계좌, 결제자 검색" />
+                </div>
+                <p className="muted small">{transactionHistoryPeriod === "month" ? `${monthLabel(selectedMonth)} ` : "전체 기간 "}거래내역 {filteredTransactions.length}건</p>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>
+                  {filteredTransactions.length === 0 ? (
+                    <tr><td colSpan={9}>조건에 맞는 거래내역이 없습니다.</td></tr>
+                  ) : filteredTransactions.map((item) => (
+                    <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>
+                  ))}
+                </tbody></table></div>
               </Card>
             </section>
           </>
