@@ -54,7 +54,18 @@ type CalendarEvent = { id: string; group_id: string; title: string; event_date: 
 type AnniversaryEvent = { id: string; group_id: string; title: string; anniversary_date: string; calendar_type: string; repeat_type: string; member_id: string | null; memo: string | null };
 type DiaryEntry = { id: string; group_id: string; author_member_id: string | null; diary_date: string; title: string; mood: string | null; content: string; visibility: string; created_at?: string };
 type DiaryPhoto = { id: string; group_id: string; diary_entry_id: string; storage_path: string; public_url: string; file_name: string | null; file_size: number | null; sort_order: number | null; created_at?: string };
-type SettlementRecord = { id: string; group_id: string; settlement_month: string; from_member_id: string | null; to_member_id: string | null; amount: number; status: "pending" | "completed"; memo: string | null; completed_at: string | null };
+type SettlementRecord = {
+  id: string;
+  group_id: string;
+  settlement_month: string;
+  from_member_id: string | null;
+  to_member_id: string | null;
+  amount: number;
+  paid_amount?: number | null;
+  status: "pending" | "completed";
+  memo: string | null;
+  completed_at: string | null;
+};
 
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => today().slice(0, 7);
@@ -1024,9 +1035,36 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const editSettlementRecord = async (record: SettlementRecord) => {
-    const amount = askMoney("정산 금액을 수정하세요.", record.amount);
+    const amount = askMoney("정산 총액을 수정하세요.", record.amount);
     if (amount === null) return;
-    await updateRow("settlement_records", record.id, { amount });
+    const paidAmount = Math.min(Number(record.paid_amount ?? 0), amount);
+    await updateRow("settlement_records", record.id, {
+      amount,
+      paid_amount: paidAmount,
+      status: paidAmount >= amount ? "completed" : "pending",
+      completed_at: paidAmount >= amount ? new Date().toISOString() : null
+    });
+  };
+
+  const recordSettlementPayment = async (record: SettlementRecord) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const paidAmount = Number(record.paid_amount ?? (record.status === "completed" ? record.amount : 0));
+    const remainingAmount = Math.max(0, Number(record.amount) - paidAmount);
+    if (remainingAmount <= 0) return showNotice({ type: "info", text: "이미 정산이 완료된 기록입니다." });
+    const payment = askMoney("이번에 받은 금액을 입력하세요.", remainingAmount);
+    if (payment === null) return;
+    if (payment <= 0) return showNotice({ type: "error", text: "받은 금액은 0원보다 커야 합니다." });
+    if (payment > remainingAmount) return showNotice({ type: "error", text: `남은 금액 ${currency(remainingAmount)}보다 크게 입력할 수 없습니다.` });
+    const nextPaidAmount = paidAmount + payment;
+    const isCompleted = nextPaidAmount >= Number(record.amount);
+    const { error } = await supabase.from("settlement_records").update({
+      paid_amount: nextPaidAmount,
+      status: isCompleted ? "completed" : "pending",
+      completed_at: isCompleted ? new Date().toISOString() : null
+    }).eq("id", record.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: isCompleted ? "정산을 완료 처리했습니다." : `일부 수령 처리했습니다. 남은 금액은 ${currency(Number(record.amount) - nextPaidAmount)}입니다.` });
   };
 
   const removeRow = async (table: string, id: string, adminOnly = false) => {
@@ -1059,7 +1097,13 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
   const updateSettlementStatus = async (id: string, status: "pending" | "completed") => {
     if (!supabase || !selectedGroupId || !requireEdit()) return;
-    const { error } = await supabase.from("settlement_records").update({ status, completed_at: status === "completed" ? new Date().toISOString() : null }).eq("id", id);
+    const record = settlementRecords.find((item) => item.id === id);
+    const nextPaidAmount = status === "completed" ? Number(record?.amount ?? 0) : Number(record?.paid_amount ?? 0);
+    const { error } = await supabase.from("settlement_records").update({
+      status,
+      paid_amount: nextPaidAmount,
+      completed_at: status === "completed" ? new Date().toISOString() : null
+    }).eq("id", id);
     if (error) return showNotice({ type: "error", text: error.message });
     await fetchGroupData(selectedGroupId);
   };
@@ -1223,10 +1267,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         activeMembers.forEach((member) => balances.set(member.id, (balances.get(member.id) ?? 0) - share));
       });
     monthSettlementRecords
-      .filter((record) => record.status === "completed" && record.from_member_id && record.to_member_id)
+      .filter((record) => record.from_member_id && record.to_member_id)
       .forEach((record) => {
-        balances.set(record.from_member_id as string, (balances.get(record.from_member_id as string) ?? 0) + Number(record.amount));
-        balances.set(record.to_member_id as string, (balances.get(record.to_member_id as string) ?? 0) - Number(record.amount));
+        const paidAmount = Number(record.paid_amount ?? (record.status === "completed" ? record.amount : 0));
+        if (paidAmount <= 0) return;
+        balances.set(record.from_member_id as string, (balances.get(record.from_member_id as string) ?? 0) + paidAmount);
+        balances.set(record.to_member_id as string, (balances.get(record.to_member_id as string) ?? 0) - paidAmount);
       });
     return members.map((member) => ({ member, balance: Math.round(balances.get(member.id) ?? 0) }));
   }, [members, monthTransactions, monthFixedExpenses, monthSettlementRecords, selectedMonth]);
@@ -1252,7 +1298,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (settlementSuggestions.length === 0) return showNotice({ type: "info", text: "생성할 정산 기록이 없습니다." });
     if (monthSettlementRecords.some((record) => record.status === "pending") && !window.confirm("이미 대기 중인 정산 기록이 있습니다. 추가로 생성할까요?")) return;
-    const rows = settlementSuggestions.map((row) => ({ group_id: selectedGroupId, settlement_month: monthStart(selectedMonth), from_member_id: row.from.id, to_member_id: row.to.id, amount: row.amount, status: "pending", memo: `${selectedMonth} 자동 정산` }));
+    const rows = settlementSuggestions.map((row) => ({ group_id: selectedGroupId, settlement_month: monthStart(selectedMonth), from_member_id: row.from.id, to_member_id: row.to.id, amount: row.amount, paid_amount: 0, status: "pending", memo: `${selectedMonth} 자동 정산` }));
     const { error } = await supabase.from("settlement_records").insert(rows);
     if (error) return showNotice({ type: "error", text: error.message });
     await fetchGroupData(selectedGroupId);
@@ -1574,7 +1620,21 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 </div>
                 <button className="secondary full gap-top" onClick={createSettlementSuggestions} disabled={!canEdit}>이번 달 정산 기록 생성</button>
                 <List>
-                  {monthSettlementRecords.slice(0, 8).map((record) => <li key={record.id}><span>{memberName(record.from_member_id)} → {memberName(record.to_member_id)} · {currency(record.amount)} · {record.status === "completed" ? "완료" : "대기"}</span><div className="inline-actions">{record.status !== "completed" && <button className="text-button" onClick={() => updateSettlementStatus(record.id, "completed")} disabled={!canEdit}>완료</button>}<button className="text-button" onClick={() => editSettlementRecord(record)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("settlement_records", record.id)} disabled={!canEdit}>삭제</button></div></li>)}
+                  {monthSettlementRecords.slice(0, 8).map((record) => {
+                    const paidAmount = Number(record.paid_amount ?? (record.status === "completed" ? record.amount : 0));
+                    const remainingAmount = Math.max(0, Number(record.amount) - paidAmount);
+                    return (
+                      <li key={record.id}>
+                        <span>{memberName(record.from_member_id)} → {memberName(record.to_member_id)} · 총 {currency(record.amount)} · 받은 {currency(paidAmount)} · 남은 {currency(remainingAmount)} · {remainingAmount <= 0 ? "완료" : "대기"}</span>
+                        <div className="inline-actions">
+                          {remainingAmount > 0 && <button className="text-button" onClick={() => recordSettlementPayment(record)} disabled={!canEdit}>일부수령</button>}
+                          {remainingAmount > 0 && <button className="text-button" onClick={() => updateSettlementStatus(record.id, "completed")} disabled={!canEdit}>전액완료</button>}
+                          <button className="text-button" onClick={() => editSettlementRecord(record)} disabled={!canEdit}>수정</button>
+                          <button className="text-button danger-text" onClick={() => removeRow("settlement_records", record.id)} disabled={!canEdit}>삭제</button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </List>
               </Card>
 

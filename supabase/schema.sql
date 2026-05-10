@@ -186,6 +186,7 @@ create table settlement_records (
   from_member_id uuid references group_members(id) on delete cascade,
   to_member_id uuid references group_members(id) on delete cascade,
   amount numeric not null default 0,
+  paid_amount numeric not null default 0,
   status text not null default 'pending', -- pending / completed
   memo text,
   completed_at timestamp with time zone,
