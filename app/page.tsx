@@ -363,6 +363,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const memberName = (id: string | null) => members.find((member) => member.id === id)?.display_name ?? "-";
   const categoryName = (id: string | null) => categories.find((category) => category.id === id)?.name ?? "미분류";
+  const accountName = (id: string | null) => accounts.find((account) => account.id === id)?.name ?? "미연동";
   const showNotice = (nextNotice: Notice) => {
     setNotice(nextNotice);
     window.setTimeout(() => setNotice(null), 3500);
@@ -442,6 +443,14 @@ function FamilyLifeApp({ session }: { session: Session }) {
       setDiaryForm((prev) => prev.author_member_id ? prev : { ...prev, author_member_id: firstMember });
     }
   }, [members]);
+
+  useEffect(() => {
+    const firstAccount = accounts[0]?.id ?? "";
+    if (firstAccount) {
+      setTransactionForm((prev) => prev.account_id ? prev : { ...prev, account_id: firstAccount });
+      setFixedForm((prev) => prev.account_id ? prev : { ...prev, account_id: firstAccount });
+    }
+  }, [accounts]);
 
   const createGroup = async (event: FormEvent) => {
     event.preventDefault();
@@ -544,26 +553,54 @@ function FamilyLifeApp({ session }: { session: Session }) {
     await fetchGroupData(selectedGroupId);
   };
 
+  const transactionBalanceDelta = (type: Transaction["type"], amount: number) => {
+    if (type === "income") return Math.abs(amount);
+    if (type === "expense") return -Math.abs(amount);
+    return 0;
+  };
+
+  const adjustAccountBalance = async (accountId: string | null, delta: number) => {
+    if (!supabase || !accountId || delta === 0) return null;
+    const account = accounts.find((item) => item.id === accountId);
+    if (!account) return "연결 계좌를 찾을 수 없습니다.";
+    const nextBalance = Number(account.balance ?? 0) + delta;
+    const { error } = await supabase.from("accounts").update({ balance: nextBalance }).eq("id", accountId);
+    return error?.message ?? null;
+  };
+
+  const applyTransactionToAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id">) => {
+    return adjustAccountBalance(transaction.account_id, transactionBalanceDelta(transaction.type, Number(transaction.amount)));
+  };
+
+  const reverseTransactionFromAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id">) => {
+    return adjustAccountBalance(transaction.account_id, -transactionBalanceDelta(transaction.type, Number(transaction.amount)));
+  };
+
   const addTransaction = async (event: FormEvent) => {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!transactionForm.title.trim()) return;
-    const { error } = await supabase.from("transactions").insert({
+    const amount = asNumber(transactionForm.amount);
+    const nextTransaction = {
       group_id: selectedGroupId,
       created_by: currentUserId,
       title: transactionForm.title.trim(),
       type: transactionForm.type,
       scope: transactionForm.scope,
       transaction_date: transactionForm.transaction_date,
-      amount: asNumber(transactionForm.amount),
+      amount,
       category_id: transactionForm.category_id || null,
       account_id: transactionForm.account_id || null,
       paid_by_member_id: transactionForm.paid_by_member_id || null,
       settlement_required: transactionForm.type === "expense" && transactionForm.scope === "shared" ? transactionForm.settlement_required : false,
       split_method: transactionForm.settlement_required ? "equal" : "none",
       memo: transactionForm.memo || null
-    });
+    };
+    const { error } = await supabase.from("transactions").insert(nextTransaction);
     if (error) return showNotice({ type: "error", text: error.message });
+    const balanceError = await applyTransactionToAccount(nextTransaction);
+    if (balanceError) showNotice({ type: "error", text: `거래는 저장됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
+    else showNotice({ type: "success", text: "거래 저장과 계좌 잔액 반영이 완료되었습니다." });
     setTransactionForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", transaction_date: today() }));
     await fetchGroupData(selectedGroupId);
   };
@@ -812,6 +849,28 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return undefined;
   };
 
+  const askAccountId = (currentAccountId: string | null | undefined) => {
+    const accountLines = accounts.map((account, index) => `${index + 1}. ${account.name} (${currency(account.balance)})`).join("\n");
+    const currentIndex = accounts.findIndex((account) => account.id === currentAccountId);
+    const next = window.prompt(
+      `연동 계좌를 수정하세요.
+번호를 입력하거나 계좌명을 입력하세요.
+빈칸으로 저장하면 계좌 연동을 해제합니다.
+
+${accountLines || "등록된 계좌가 없습니다."}`,
+      currentIndex >= 0 ? String(currentIndex + 1) : ""
+    );
+    if (next === null) return undefined;
+    const trimmed = next.trim();
+    if (!trimmed) return null;
+    const index = Number(trimmed) - 1;
+    if (Number.isInteger(index) && accounts[index]) return accounts[index].id;
+    const matched = accounts.find((account) => account.name === trimmed || account.id === trimmed);
+    if (matched) return matched.id;
+    showNotice({ type: "error", text: "일치하는 계좌를 찾지 못했습니다." });
+    return undefined;
+  };
+
   const editMemberName = async (member: GroupMember) => {
     if (member.role === "owner" && !isOwner) return showNotice({ type: "error", text: "owner 이름은 소유자만 수정할 수 있습니다." });
     const displayName = askText("구성원 이름을 수정하세요.", member.display_name);
@@ -848,23 +907,41 @@ function FamilyLifeApp({ session }: { session: Session }) {
   };
 
   const editTransaction = async (item: Transaction) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
     const title = askText("거래 내용을 수정하세요.", item.title);
     if (!title) return;
     const amount = askMoney("금액을 수정하세요.", item.amount);
     if (amount === null) return;
     const transactionDate = askDate("거래일을 수정하세요. 예: 2026-05-10", item.transaction_date);
     if (!transactionDate) return;
+    const accountId = askAccountId(item.account_id);
+    if (accountId === undefined) return;
     const categoryId = askCategoryId(item.category_id);
     if (categoryId === undefined) return;
     const memo = window.prompt("세부내용을 수정하세요.", item.memo ?? "");
     if (memo === null) return;
-    await updateRow("transactions", item.id, {
+
+    const reverseError = await reverseTransactionFromAccount(item);
+    if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
+
+    const patch = {
       title,
       amount,
       transaction_date: transactionDate,
+      account_id: accountId,
       category_id: categoryId,
       memo: memo.trim() || null
-    });
+    };
+    const { error } = await supabase.from("transactions").update(patch).eq("id", item.id);
+    if (error) {
+      await applyTransactionToAccount(item);
+      return showNotice({ type: "error", text: error.message });
+    }
+
+    const balanceError = await applyTransactionToAccount({ type: item.type, amount, account_id: accountId });
+    if (balanceError) return showNotice({ type: "error", text: `거래는 수정됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "거래 수정과 계좌 잔액 재계산이 완료되었습니다." });
   };
 
   const editFixedExpense = async (item: FixedExpense) => {
@@ -948,9 +1025,20 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (adminOnly && !requireAdmin()) return;
     if (!adminOnly && !requireEdit()) return;
     if (!window.confirm("정말 삭제하시겠습니까?")) return;
+
+    const targetTransaction = table === "transactions" ? transactions.find((item) => item.id === id) : null;
+    if (targetTransaction) {
+      const reverseError = await reverseTransactionFromAccount(targetTransaction);
+      if (reverseError) return showNotice({ type: "error", text: `계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
+    }
+
     const { error } = await supabase.from(table).delete().eq("id", id);
-    if (error) return showNotice({ type: "error", text: error.message });
+    if (error) {
+      if (targetTransaction) await applyTransactionToAccount(targetTransaction);
+      return showNotice({ type: "error", text: error.message });
+    }
     await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: targetTransaction ? "삭제했고 계좌 잔액도 되돌렸습니다." : "삭제했습니다." });
   };
 
   const toggleRow = async (table: "tasks" | "shopping_items" | "calendar_events", id: string, isDone: boolean) => {
@@ -1398,9 +1486,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
                     <select value={transactionForm.scope} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit}><option value="shared">공동</option><option value="personal">개인</option></select>
                   </div>
                   <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" disabled={!canEdit} /></div>
+                  <select value={transactionForm.account_id} onChange={(event) => setTransactionForm({ ...transactionForm, account_id: event.target.value })} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
                   <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <textarea rows={3} value={transactionForm.memo} onChange={(event) => setTransactionForm({ ...transactionForm, memo: event.target.value })} placeholder="세부내용: 사용처, 메모, 영수증 정보 등을 적어두세요." disabled={!canEdit} />
                   <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+                  <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다. 이체는 계좌 간 이동 구조가 추가될 때까지 잔액 자동 반영에서 제외됩니다.</p>
                   <label className="check-line"><input type="checkbox" checked={transactionForm.settlement_required} onChange={(event) => setTransactionForm({ ...transactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>
                   <button disabled={!canEdit}>거래 저장</button>
                 </form>
@@ -1468,7 +1558,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
             <section className="grid two">
               <Card title="최근 거래내역" description="수입·지출·이체 내역입니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{transactions.slice(0, 30).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{item.type === "income" ? "수입" : item.type === "expense" ? "지출" : "이체"} · {item.scope === "shared" ? "공동" : "개인"}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>

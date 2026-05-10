@@ -224,3 +224,4 @@ textarea { resize: vertical; min-height: 76px; }
 .field-help { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 
 .memo-cell { max-width: 260px; white-space: normal; color: var(--muted); line-height: 1.4; }
+.form-help { margin: -2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }

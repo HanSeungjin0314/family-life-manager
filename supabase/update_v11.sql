@@ -1,0 +1,4 @@
+-- Together Life v11 안내
+-- v11은 계좌 잔액 자동 반영 기능을 프론트 코드로 추가한 버전입니다.
+-- 기존 accounts.balance, transactions.account_id 컬럼을 사용하므로 Supabase DB 변경은 필요 없습니다.
+-- 실행할 SQL이 없습니다.
