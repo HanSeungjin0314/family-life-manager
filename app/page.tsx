@@ -50,6 +50,7 @@ type Goal = { id: string; group_id: string; title: string; target_amount: number
 type CalendarEvent = { id: string; group_id: string; title: string; event_date: string; event_time: string | null; assigned_to_member_id: string | null; event_type: string; repeat_type: string; is_done: boolean; is_important: boolean; memo: string | null };
 type AnniversaryEvent = { id: string; group_id: string; title: string; anniversary_date: string; calendar_type: string; repeat_type: string; member_id: string | null; memo: string | null };
 type DiaryEntry = { id: string; group_id: string; author_member_id: string | null; diary_date: string; title: string; mood: string | null; content: string; visibility: string; created_at?: string };
+type DiaryPhoto = { id: string; group_id: string; diary_entry_id: string; storage_path: string; public_url: string; file_name: string | null; file_size: number | null; sort_order: number | null; created_at?: string };
 type SettlementRecord = { id: string; group_id: string; settlement_month: string; from_member_id: string | null; to_member_id: string | null; amount: number; status: "pending" | "completed"; memo: string | null; completed_at: string | null };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -64,6 +65,9 @@ const formatMoneyInput = (value: string) => {
 };
 const monthLabel = (month: string) => month.replace("-", "년 ") + "월";
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+const MAX_DIARY_PHOTOS = 5;
+const MAX_DIARY_PHOTO_SIZE_MB = 5;
+const MAX_DIARY_PHOTO_SIZE = MAX_DIARY_PHOTO_SIZE_MB * 1024 * 1024;
 
 const seedCategories = [
   { name: "식비", type: "expense", color: "#f97316", sort_order: 1 },
@@ -176,6 +180,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [anniversaryEvents, setAnniversaryEvents] = useState<AnniversaryEvent[]>([]);
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [diaryPhotos, setDiaryPhotos] = useState<DiaryPhoto[]>([]);
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
   const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "life" | "settings">("home");
@@ -208,6 +213,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [eventForm, setEventForm] = useState({ title: "", event_date: today(), event_time: "", assigned_to_member_id: "", event_type: "schedule", repeat_type: "none", is_important: false, memo: "" });
   const [anniversaryForm, setAnniversaryForm] = useState({ title: "", anniversary_date: today(), calendar_type: "solar", repeat_type: "yearly", member_id: "", memo: "" });
   const [diaryForm, setDiaryForm] = useState({ title: "", diary_date: today(), mood: "normal", content: "", visibility: "group", author_member_id: "" });
+  const [diaryPhotoFiles, setDiaryPhotoFiles] = useState<File[]>([]);
+  const [photoInputKey, setPhotoInputKey] = useState(0);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
@@ -246,7 +253,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const fetchGroupData = async (groupId: string) => {
     if (!supabase || !groupId) return;
     setLoading(true);
-    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, settlementRes] = await Promise.all([
+    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes] = await Promise.all([
       supabase.from("group_members").select("*").eq("group_id", groupId).order("created_at", { ascending: true }),
       supabase.from("group_invites").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("categories").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
@@ -260,10 +267,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
       supabase.from("calendar_events").select("*").eq("group_id", groupId).order("event_date", { ascending: true }),
       supabase.from("anniversary_events").select("*").eq("group_id", groupId).order("anniversary_date", { ascending: true }),
       supabase.from("diary_entries").select("*").eq("group_id", groupId).order("diary_date", { ascending: false }),
+      supabase.from("diary_photos").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
       supabase.from("settlement_records").select("*").eq("group_id", groupId).order("created_at", { ascending: false })
     ]);
     setLoading(false);
-    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, settlementRes].find((res) => res.error)?.error;
+    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes].find((res) => res.error)?.error;
     if (firstError) return showNotice({ type: "error", text: firstError.message });
     setMembers((memberRes.data ?? []) as GroupMember[]);
     setInvites((inviteRes.data ?? []) as GroupInvite[]);
@@ -278,6 +286,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     setCalendarEvents((eventRes.data ?? []) as CalendarEvent[]);
     setAnniversaryEvents((anniversaryRes.data ?? []) as AnniversaryEvent[]);
     setDiaryEntries((diaryRes.data ?? []) as DiaryEntry[]);
+    setDiaryPhotos((diaryPhotoRes.data ?? []) as DiaryPhoto[]);
     setSettlementRecords((settlementRes.data ?? []) as SettlementRecord[]);
   };
 
@@ -499,12 +508,109 @@ function FamilyLifeApp({ session }: { session: Session }) {
     await fetchGroupData(selectedGroupId);
   };
 
+  const diaryPhotosFor = (diaryId: string) => diaryPhotos.filter((photo) => photo.diary_entry_id === diaryId);
+
+  const handleDiaryPhotoSelection = (files: FileList | null) => {
+    const nextFiles = Array.from(files ?? []);
+    if (nextFiles.length > MAX_DIARY_PHOTOS) {
+      setDiaryPhotoFiles([]);
+      setPhotoInputKey((value) => value + 1);
+      showNotice({ type: "error", text: `다이어리 사진은 최대 ${MAX_DIARY_PHOTOS}장까지 첨부할 수 있습니다.` });
+      return;
+    }
+    const invalidFile = nextFiles.find((file) => !file.type.startsWith("image/") || file.size > MAX_DIARY_PHOTO_SIZE);
+    if (invalidFile) {
+      setDiaryPhotoFiles([]);
+      setPhotoInputKey((value) => value + 1);
+      showNotice({ type: "error", text: `사진은 이미지 파일만 가능하고, 1장당 ${MAX_DIARY_PHOTO_SIZE_MB}MB 이하만 가능합니다.` });
+      return;
+    }
+    setDiaryPhotoFiles(nextFiles);
+  };
+
+  const uploadDiaryPhotos = async (diaryId: string, files: File[], alreadyCount = 0) => {
+    if (!supabase || !selectedGroupId || files.length === 0) return true;
+    const remaining = MAX_DIARY_PHOTOS - alreadyCount;
+    if (files.length > remaining) {
+      showNotice({ type: "error", text: `이 다이어리에 추가 가능한 사진은 ${remaining}장입니다. 다이어리 1개당 최대 ${MAX_DIARY_PHOTOS}장까지 가능합니다.` });
+      return false;
+    }
+
+    const rows = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      if (!file.type.startsWith("image/") || file.size > MAX_DIARY_PHOTO_SIZE) {
+        showNotice({ type: "error", text: `사진은 이미지 파일만 가능하고, 1장당 ${MAX_DIARY_PHOTO_SIZE_MB}MB 이하만 가능합니다.` });
+        return false;
+      }
+      const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
+      const safeExtension = String(extension || "jpg").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "jpg";
+      const filePath = `${selectedGroupId}/${diaryId}/${Date.now()}-${index}-${Math.random().toString(36).slice(2)}.${safeExtension}`;
+      const { error: uploadError } = await supabase.storage.from("diary-photos").upload(filePath, file, { contentType: file.type, upsert: false });
+      if (uploadError) {
+        showNotice({ type: "error", text: `사진 업로드 실패: ${uploadError.message}` });
+        return false;
+      }
+      const { data: publicData } = supabase.storage.from("diary-photos").getPublicUrl(filePath);
+      rows.push({
+        group_id: selectedGroupId,
+        diary_entry_id: diaryId,
+        storage_path: filePath,
+        public_url: publicData.publicUrl,
+        file_name: file.name,
+        file_size: file.size,
+        sort_order: alreadyCount + index
+      });
+    }
+
+    const { error: insertError } = await supabase.from("diary_photos").insert(rows);
+    if (insertError) {
+      showNotice({ type: "error", text: `사진 정보 저장 실패: ${insertError.message}` });
+      return false;
+    }
+    return true;
+  };
+
+  const addPhotosToDiary = (diary: DiaryEntry) => {
+    if (!canEdit) return showNotice({ type: "error", text: "사진 추가 권한이 없습니다." });
+    const currentCount = diaryPhotosFor(diary.id).length;
+    if (currentCount >= MAX_DIARY_PHOTOS) {
+      showNotice({ type: "info", text: `이 다이어리는 이미 사진 ${MAX_DIARY_PHOTOS}장이 첨부되어 있습니다.` });
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = Array.from(input.files ?? []);
+      const ok = await uploadDiaryPhotos(diary.id, files, currentCount);
+      if (ok) {
+        await fetchGroupData(selectedGroupId);
+        showNotice({ type: "success", text: "사진을 추가했습니다." });
+      }
+    };
+    input.click();
+  };
+
+  const removeDiaryPhoto = async (photo: DiaryPhoto) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!window.confirm("이 사진을 삭제할까요?")) return;
+    const { error: storageError } = await supabase.storage.from("diary-photos").remove([photo.storage_path]);
+    if (storageError) return showNotice({ type: "error", text: storageError.message });
+    const { error } = await supabase.from("diary_photos").delete().eq("id", photo.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "사진을 삭제했습니다." });
+  };
+
   const addDiaryEntry = async (event: FormEvent) => {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!diaryForm.title.trim()) return showNotice({ type: "error", text: "다이어리 제목을 입력하세요." });
     if (!diaryForm.content.trim()) return showNotice({ type: "error", text: "다이어리 내용을 입력하세요." });
-    const { error } = await supabase.from("diary_entries").insert({
+    if (diaryPhotoFiles.length > MAX_DIARY_PHOTOS) return showNotice({ type: "error", text: `다이어리 사진은 최대 ${MAX_DIARY_PHOTOS}장까지 첨부할 수 있습니다.` });
+    const { data: diary, error } = await supabase.from("diary_entries").insert({
       group_id: selectedGroupId,
       author_member_id: diaryForm.author_member_id || currentMember?.id || null,
       diary_date: diaryForm.diary_date,
@@ -512,9 +618,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
       mood: diaryForm.mood,
       content: diaryForm.content.trim(),
       visibility: diaryForm.visibility
-    });
-    if (error) return showNotice({ type: "error", text: error.message });
+    }).select("*").single();
+    if (error || !diary) return showNotice({ type: "error", text: error?.message ?? "다이어리 저장에 실패했습니다." });
+    if (diaryPhotoFiles.length > 0) await uploadDiaryPhotos((diary as DiaryEntry).id, diaryPhotoFiles);
     setDiaryForm((prev) => ({ ...prev, title: "", content: "", mood: "normal" }));
+    setDiaryPhotoFiles([]);
+    setPhotoInputKey((value) => value + 1);
     await fetchGroupData(selectedGroupId);
   };
 
@@ -1077,12 +1186,48 @@ function FamilyLifeApp({ session }: { session: Session }) {
                 <div className="form-row"><input type="date" value={diaryForm.diary_date} onChange={(event) => setDiaryForm({ ...diaryForm, diary_date: event.target.value })} disabled={!canEdit} /><select value={diaryForm.mood} onChange={(event) => setDiaryForm({ ...diaryForm, mood: event.target.value })} disabled={!canEdit}><option value="happy">😊 좋음</option><option value="normal">🙂 보통</option><option value="tired">😵 피곤</option><option value="sad">😢 슬픔</option><option value="thankful">🙏 감사</option></select></div>
                 <div className="form-row"><select value={diaryForm.author_member_id} onChange={(event) => setDiaryForm({ ...diaryForm, author_member_id: event.target.value })} disabled={!canEdit}><option value="">작성자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select><select value={diaryForm.visibility} onChange={(event) => setDiaryForm({ ...diaryForm, visibility: event.target.value })} disabled={!canEdit}><option value="group">공유</option><option value="private">개인 메모</option></select></div>
                 <textarea rows={8} value={diaryForm.content} onChange={(event) => setDiaryForm({ ...diaryForm, content: event.target.value })} placeholder="오늘 있었던 일, 고마웠던 일, 함께 기억하고 싶은 내용을 적어보세요." disabled={!canEdit} />
+                <div className="photo-input-box">
+                  <label>사진 첨부</label>
+                  <input key={photoInputKey} type="file" accept="image/*" multiple onChange={(event) => handleDiaryPhotoSelection(event.target.files)} disabled={!canEdit} />
+                  <small>다이어리 1개당 최대 {MAX_DIARY_PHOTOS}장, 1장당 {MAX_DIARY_PHOTO_SIZE_MB}MB 이하</small>
+                  {diaryPhotoFiles.length > 0 && <div className="selected-photo-list">{diaryPhotoFiles.map((file, index) => <span key={`${file.name}-${index}`}>📷 {file.name}</span>)}</div>}
+                </div>
                 <button disabled={!canEdit}>다이어리 저장</button>
               </form>
             </Card>
 
             <Card title="이번 달 다이어리" description="최근 작성한 기록을 모아봅니다.">
-              <List>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.map((diary) => <li key={diary.id}><span>{diary.diary_date} · {moodLabel(diary.mood)} · {diary.title} · {memberName(diary.author_member_id)}</span><div className="inline-actions"><button className="text-button" onClick={() => editDiaryEntry(diary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List>
+              <div className="diary-list">
+                {selectedMonthDiaryEntries.length === 0 && <div className="line-item">이번 달 다이어리가 없습니다.</div>}
+                {selectedMonthDiaryEntries.map((diary) => {
+                  const photos = diaryPhotosFor(diary.id);
+                  return (
+                    <article className="diary-item" key={diary.id}>
+                      <div className="between">
+                        <div>
+                          <strong>{diary.diary_date} · {moodLabel(diary.mood)} · {diary.title}</strong>
+                          <p className="muted small">작성자: {memberName(diary.author_member_id)} · 사진 {photos.length}/{MAX_DIARY_PHOTOS}장</p>
+                        </div>
+                        <div className="inline-actions">
+                          <button className="text-button" onClick={() => addPhotosToDiary(diary)} disabled={!canEdit || photos.length >= MAX_DIARY_PHOTOS}>사진추가</button>
+                          <button className="text-button" onClick={() => editDiaryEntry(diary)} disabled={!canEdit}>수정</button>
+                          <button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button>
+                        </div>
+                      </div>
+                      {photos.length > 0 && (
+                        <div className="photo-grid">
+                          {photos.map((photo) => (
+                            <figure key={photo.id} className="photo-thumb">
+                              <img src={photo.public_url} alt={photo.file_name ?? diary.title} />
+                              <button type="button" onClick={() => removeDiaryPhoto(photo)} disabled={!canEdit}>삭제</button>
+                            </figure>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
             </Card>
           </section>
         )}

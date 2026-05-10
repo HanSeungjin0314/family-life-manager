@@ -1,65 +1,38 @@
-# Family Life Manager v3
+# Together Life v6
 
-부부·커플·가족용 생활 관리 웹앱입니다.
+부부가 함께 쓰는 생활 관리 웹앱입니다.
 
-## v2 추가 기능
+## v6 추가 기능
 
-- owner / admin / member / viewer 권한 구조
-- 초대코드 생성 및 참여
-- 일정 관리
-- 정산 기록 생성 및 완료 처리
-- viewer 조회 전용 제한
-- 관리자 전용 설정: 구성원, 초대, 계좌, 예산, 카테고리, 고정비
+- 다이어리 사진 첨부 기능 추가
+- 다이어리 1개당 사진 최대 5장
+- 사진 1장당 최대 5MB
+- 지원 파일: jpg, png, webp, gif
+- 기존 다이어리에 `사진추가` 버튼으로 사진 추가 가능
+- 첨부 사진 개별 삭제 가능
 
-## 기존 v1에서 업데이트하는 경우
+## Supabase 적용
 
-Supabase SQL Editor에서 아래 파일만 실행하세요.
-
-```text
-supabase/update_v2.sql
-```
-
-기존 데이터를 유지하면서 필요한 테이블과 권한 정책을 추가합니다.
-
-## 새 Supabase 프로젝트에서 처음 설치하는 경우
-
-Supabase SQL Editor에서 아래 파일을 실행하세요.
+기존 v5까지 적용되어 있다면 Supabase SQL Editor에서 아래 파일만 실행하세요.
 
 ```text
-supabase/schema.sql
+supabase/update_v6.sql
 ```
 
-주의: schema.sql은 reset용이라 기존 family-life-manager 데이터가 있으면 삭제됩니다.
+v6는 Supabase Storage bucket `diary-photos`와 `diary_photos` 테이블을 추가합니다.
 
-## 실행
+## 로컬 실행
 
 ```powershell
-cd C:\Users\seung\Downloads\family-life-manager-v2
+cd "프로젝트폴더"
 & "C:\Program Files\nodejs\npm.cmd" install
 & "C:\Program Files\nodejs\npm.cmd" run dev
 ```
 
-브라우저:
+## GitHub/Vercel 반영
 
-```text
-http://localhost:3000
+```powershell
+git add .
+git commit -m "Add diary photo upload feature"
+git push
 ```
-
-## 환경변수
-
-`.env.example`을 `.env.local`로 복사하고 새 Supabase 프로젝트 값을 입력하세요.
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-```
-
-
-## v3 추가 기능
-
-- 월간 공유 달력: 일정, 기념일, 다이어리 작성일을 달력에서 확인
-- 일정 고도화: 일정 종류, 반복, 중요 일정, 메모 지원
-- 기념일 관리: 만난 날, 결혼기념일, 생일, 가족 기념일 등록
-- 다이어리: 커플/부부/가족 일기, 감정 기록, 공유/개인 메모 구분
-
-기존 v2 데이터가 있다면 Supabase SQL Editor에서 `supabase/update_v3.sql`만 실행하세요.
