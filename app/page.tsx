@@ -50,7 +50,7 @@ type FixedExpense = {
 type Task = { id: string; group_id: string; title: string; assigned_to_member_id: string | null; due_date: string | null; repeat_type: string; is_done: boolean; memo: string | null };
 type ShoppingItem = { id: string; group_id: string; item_name: string; quantity: string | null; added_by_member_id: string | null; is_done: boolean; memo: string | null };
 type Goal = { id: string; group_id: string; title: string; target_amount: number; current_amount: number; target_date: string | null; memo: string | null };
-type CalendarEvent = { id: string; group_id: string; title: string; event_date: string; event_time: string | null; assigned_to_member_id: string | null; event_type: string; repeat_type: string; is_done: boolean; is_important: boolean; memo: string | null };
+type CalendarEvent = { id: string; group_id: string; title: string; event_date: string; event_time: string | null; assigned_to_member_id: string | null; event_type: string; repeat_type: string; repeat_until: string | null; is_done: boolean; is_important: boolean; memo: string | null };
 type AnniversaryEvent = { id: string; group_id: string; title: string; anniversary_date: string; calendar_type: string; repeat_type: string; member_id: string | null; memo: string | null };
 type DiaryEntry = { id: string; group_id: string; author_member_id: string | null; diary_date: string; title: string; mood: string | null; content: string; visibility: string; created_at?: string };
 type DiaryPhoto = { id: string; group_id: string; diary_entry_id: string; storage_path: string; public_url: string; file_name: string | null; file_size: number | null; sort_order: number | null; created_at?: string };
@@ -166,6 +166,35 @@ const fixedOccurrenceCountInMonth = (item: Pick<FixedExpense, "is_active" | "sta
   }
   return count;
 };
+
+const eventOccurrenceDatesInMonth = (item: Pick<CalendarEvent, "event_date" | "repeat_type" | "repeat_until">, month: string) => {
+  if (!item.event_date) return [];
+  const monthStartDate = `${month}-01`;
+  const monthDate = new Date(`${month}-01T00:00:00`);
+  const monthEnd = dateOnly(new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0));
+  const repeatType = item.repeat_type || "none";
+  if (!repeatType || repeatType === "none" || repeatType === "once") {
+    return item.event_date.startsWith(month) ? [item.event_date] : [];
+  }
+  if (item.repeat_until && monthStartDate > item.repeat_until) return [];
+  const dates: string[] = [];
+  let cursor = nextDateForRepeat(item.event_date, repeatType, monthStartDate);
+  while (cursor && cursor <= monthEnd && !isAfterEndDate(cursor, item.repeat_until)) {
+    if (cursor >= item.event_date) dates.push(cursor);
+    const nextFrom = dateOnly(new Date(new Date(`${cursor}T00:00:00`).getTime() + 86400000));
+    cursor = nextDateForRepeat(item.event_date, repeatType, nextFrom);
+  }
+  return dates;
+};
+const eventRepeatLabel = (repeatType: string | null | undefined) => {
+  if (!repeatType || repeatType === "none" || repeatType === "once") return "반복 없음";
+  if (repeatType === "daily") return "매일 반복";
+  if (repeatType === "weekly") return "매주 반복";
+  if (repeatType === "monthly") return "매월 반복";
+  if (repeatType === "yearly") return "매년 반복";
+  return "반복";
+};
+
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
 const MAX_DIARY_PHOTOS = 5;
 const MAX_DIARY_PHOTO_SIZE_MB = 5;
@@ -365,7 +394,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [taskForm, setTaskForm] = useState({ title: "", assigned_to_member_id: "", due_date: today(), repeat_type: "none", memo: "" });
   const [shoppingForm, setShoppingForm] = useState({ item_name: "", quantity: "", added_by_member_id: "", memo: "" });
   const [goalForm, setGoalForm] = useState({ title: "", target_amount: "0", current_amount: "0", target_date: "", memo: "" });
-  const [eventForm, setEventForm] = useState({ title: "", event_date: today(), event_time: "", assigned_to_member_id: "", event_type: "schedule", repeat_type: "none", is_important: false, memo: "" });
+  const [eventForm, setEventForm] = useState({ title: "", event_date: today(), event_time: "", assigned_to_member_id: "", event_type: "schedule", repeat_type: "none", repeat_until: "", is_important: false, memo: "" });
   const [anniversaryForm, setAnniversaryForm] = useState({ title: "", anniversary_date: today(), calendar_type: "solar", repeat_type: "yearly", member_id: "", memo: "" });
   const [diaryForm, setDiaryForm] = useState({ title: "", diary_date: today(), mood: "normal", content: "", visibility: "group", author_member_id: "" });
   const [diaryPhotoFiles, setDiaryPhotoFiles] = useState<File[]>([]);
@@ -674,11 +703,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
       assigned_to_member_id: eventForm.assigned_to_member_id || null,
       event_type: eventForm.event_type,
       repeat_type: eventForm.repeat_type,
+      repeat_until: eventForm.repeat_type === "none" ? null : eventForm.repeat_until || null,
       is_important: eventForm.is_important,
       memo: eventForm.memo || null
     });
     if (error) return showNotice({ type: "error", text: error.message });
-    setEventForm((prev) => ({ ...prev, title: "", memo: "", event_type: "schedule", repeat_type: "none", is_important: false }));
+    setEventForm((prev) => ({ ...prev, title: "", memo: "", event_type: "schedule", repeat_type: "none", repeat_until: "", is_important: false }));
     await fetchGroupData(selectedGroupId);
   };
 
@@ -1015,7 +1045,13 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     if (!eventDate) return;
     const eventTime = window.prompt("일정 시간을 수정하세요. 예: 18:30", item.event_time ?? "");
     if (eventTime === null) return;
-    await updateRow("calendar_events", item.id, { title, event_date: eventDate, event_time: eventTime.trim() || null });
+    const repeatType = window.prompt("반복 주기를 수정하세요. none/daily/weekly/monthly/yearly", item.repeat_type ?? "none");
+    if (repeatType === null) return;
+    const safeRepeatType = ["none", "daily", "weekly", "monthly", "yearly"].includes(repeatType.trim()) ? repeatType.trim() : "none";
+    const repeatUntil = safeRepeatType === "none" ? null : (askDate("반복 종료일을 수정하세요. 비워두면 계속 반복됩니다. 예: 2026-12-31", item.repeat_until ?? "") || null);
+    const memo = window.prompt("메모를 수정하세요.", item.memo ?? "");
+    if (memo === null) return;
+    await updateRow("calendar_events", item.id, { title, event_date: eventDate, event_time: eventTime.trim() || null, repeat_type: safeRepeatType, repeat_until: repeatUntil, memo: memo.trim() || null });
   };
 
   const editAnniversary = async (item: AnniversaryEvent) => {
@@ -1133,8 +1169,21 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   const monthBudgets = useMemo(() => budgets.filter((item) => item.budget_month?.startsWith(selectedMonth)), [budgets, selectedMonth]);
   const monthFixedExpenses = useMemo(() => fixedExpenses.filter((item) => fixedOccurrenceInMonth(item, selectedMonth)), [fixedExpenses, selectedMonth]);
   const monthSettlementRecords = useMemo(() => settlementRecords.filter((item) => item.settlement_month?.startsWith(selectedMonth)), [settlementRecords, selectedMonth]);
-  const upcomingEvents = useMemo(() => calendarEvents.filter((item) => item.event_date >= today()).slice(0, 8), [calendarEvents]);
-  const selectedMonthEvents = useMemo(() => calendarEvents.filter((item) => item.event_date?.startsWith(selectedMonth)), [calendarEvents, selectedMonth]);
+  const upcomingEvents = useMemo(() => {
+    const now = today();
+    return calendarEvents
+      .map((item) => {
+        const nextDate = nextDateForRepeat(item.event_date, item.repeat_type, now);
+        if (!nextDate || isAfterEndDate(nextDate, item.repeat_until)) return null;
+        return { ...item, occurrence_date: nextDate };
+      })
+      .filter((item): item is CalendarEvent & { occurrence_date: string } => item !== null)
+      .sort((a, b) => a.occurrence_date.localeCompare(b.occurrence_date))
+      .slice(0, 8);
+  }, [calendarEvents]);
+  const selectedMonthEvents = useMemo(() => {
+    return calendarEvents.flatMap((item) => eventOccurrenceDatesInMonth(item, selectedMonth).map((occurrence_date) => ({ ...item, occurrence_date })));
+  }, [calendarEvents, selectedMonth]);
   const selectedMonthAnniversaries = useMemo(() => {
     const monthEnd = new Date(new Date(`${selectedMonth}-01T00:00:00`).getFullYear(), new Date(`${selectedMonth}-01T00:00:00`).getMonth() + 1, 0);
     return anniversaryEvents.filter((item) => {
@@ -1171,7 +1220,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const rows: Array<{ id: string; type: string; date: string; title: string; dday: number; memo?: string }> = [];
     calendarEvents.forEach((event) => {
       const nextDate = nextDateForRepeat(event.event_date, event.repeat_type, now);
-      if (!nextDate) return;
+      if (!nextDate || isAfterEndDate(nextDate, event.repeat_until)) return;
       const dday = daysBetween(now, nextDate);
       if (dday <= 30) rows.push({ id: `event-${event.id}`, type: event.is_important ? "중요 일정" : "일정", date: nextDate, title: event.title, dday, memo: event.event_time ?? undefined });
     });
@@ -1219,14 +1268,14 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const firstDay = new Date(`${selectedMonth}-01T00:00:00`);
     const daysInMonth = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0).getDate();
     const blanks = firstDay.getDay();
-    const cells: Array<{ date: string | null; day: number | null; events: CalendarEvent[]; anniversaries: AnniversaryEvent[]; diaries: DiaryEntry[] }> = [];
+    const cells: Array<{ date: string | null; day: number | null; events: Array<CalendarEvent & { occurrence_date?: string }>; anniversaries: AnniversaryEvent[]; diaries: DiaryEntry[] }> = [];
     for (let i = 0; i < blanks; i += 1) cells.push({ date: null, day: null, events: [], anniversaries: [], diaries: [] });
     for (let dayNum = 1; dayNum <= daysInMonth; dayNum += 1) {
       const date = `${selectedMonth}-${String(dayNum).padStart(2, "0")}`;
       cells.push({
         date,
         day: dayNum,
-        events: selectedMonthEvents.filter((item) => item.event_date === date),
+        events: selectedMonthEvents.filter((item) => item.occurrence_date === date),
         anniversaries: selectedMonthAnniversaries.filter((item) => item.anniversary_date.slice(5, 10) === date.slice(5, 10)),
         diaries: diaryEntries.filter((item) => item.diary_date === date)
       });
@@ -1536,7 +1585,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""}`}>
                       {cell.day && <strong>{cell.day}</strong>}
                       {cell.anniversaries.slice(0, 2).map((anniversary) => <small className="cal-pill anniversary" key={anniversary.id}>🎉 {anniversary.title}</small>)}
-                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={event.id}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
+                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
                       {cell.diaries.slice(0, 1).map((diary) => <small className="cal-pill diary" key={diary.id}>📓 {diary.title}</small>)}
                     </div>
                   ))}
@@ -1544,7 +1593,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               </Card>
 
               <Card title="다가오는 일정·기념일" description="이번 달에 바로 확인하면 되는 내용만 모아봤어요.">
-                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.occurrence_date ?? event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title} · {eventRepeatLabel(event.repeat_type)}{event.repeat_until ? ` · ${event.repeat_until}까지` : ""}{event.memo ? <em className="item-memo">메모: {event.memo}</em> : null}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
                 <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(anniversary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
                 <div className="mini-section"><h4>이번 달 다이어리</h4><List compact>{selectedMonthDiaryEntries.length === 0 && <li><span>이번 달 다이어리가 없습니다.</span></li>}{selectedMonthDiaryEntries.slice(0, 5).map((diary) => <li key={diary.id}><span>{diary.diary_date} · {diary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editDiaryEntry(diary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("diary_entries", diary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
               </Card>
@@ -1723,7 +1772,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""}`}>
                       {cell.day && <strong>{cell.day}</strong>}
                       {cell.anniversaries.slice(0, 2).map((anniversary) => <small className="cal-pill anniversary" key={anniversary.id}>🎉 {anniversary.title}</small>)}
-                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={event.id}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
+                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
                       {cell.diaries.slice(0, 1).map((diary) => <small className="cal-pill diary" key={diary.id}>📓 {diary.title}</small>)}
                     </div>
                   ))}
@@ -1731,7 +1780,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               </Card>
 
               <Card title="다가오는 일정·기념일" description="가까운 일정과 반복 기념일을 빠르게 확인합니다.">
-                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
+                <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.occurrence_date ?? event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title} · {eventRepeatLabel(event.repeat_type)}{event.repeat_until ? ` · ${event.repeat_until}까지` : ""}{event.memo ? <em className="item-memo">메모: {event.memo}</em> : null}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
                 <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(anniversary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
               </Card>
             </section>
@@ -1742,6 +1791,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <input value={eventForm.title} onChange={(event) => setEventForm({ ...eventForm, title: event.target.value })} placeholder="일정명" disabled={!canEdit} />
                   <div className="form-row"><input type="date" value={eventForm.event_date} onChange={(event) => setEventForm({ ...eventForm, event_date: event.target.value })} disabled={!canEdit} /><input type="time" value={eventForm.event_time} onChange={(event) => setEventForm({ ...eventForm, event_time: event.target.value })} disabled={!canEdit} /></div>
                   <div className="form-row"><select value={eventForm.event_type} onChange={(event) => setEventForm({ ...eventForm, event_type: event.target.value })} disabled={!canEdit}><option value="schedule">일반 일정</option><option value="hospital">병원/건강</option><option value="payment">납부일</option><option value="date">데이트/외출</option><option value="family">가족행사</option></select><select value={eventForm.repeat_type} onChange={(event) => setEventForm({ ...eventForm, repeat_type: event.target.value })} disabled={!canEdit}><option value="none">반복 없음</option><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select></div>
+                  {eventForm.repeat_type !== "none" && <div className="form-row"><input type="date" value={eventForm.repeat_until} onChange={(event) => setEventForm({ ...eventForm, repeat_until: event.target.value })} disabled={!canEdit} /><p className="form-help">종료일을 비우면 계속 반복됩니다.</p></div>}
                   <select value={eventForm.assigned_to_member_id} onChange={(event) => setEventForm({ ...eventForm, assigned_to_member_id: event.target.value })} disabled={!canEdit}><option value="">담당자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   <textarea rows={3} value={eventForm.memo} onChange={(event) => setEventForm({ ...eventForm, memo: event.target.value })} placeholder="메모" disabled={!canEdit} />
                   <label className="check-line"><input type="checkbox" checked={eventForm.is_important} onChange={(event) => setEventForm({ ...eventForm, is_important: event.target.checked })} disabled={!canEdit} /> 중요 일정</label>

@@ -174,6 +174,7 @@ create table calendar_events (
   event_time time,
   assigned_to_member_id uuid references group_members(id) on delete set null,
   repeat_type text not null default 'none', -- none / daily / weekly / monthly / yearly
+  repeat_until date,
   is_done boolean not null default false,
   memo text,
   created_at timestamp with time zone default now()
