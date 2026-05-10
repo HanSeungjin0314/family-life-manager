@@ -1,8 +1,8 @@
-# Together Life v7
+# Together Life v8
 
 부부가 함께 쓰는 생활 관리 웹앱입니다.
 
-## v7 추가 기능
+## v7 추가 기능 유지
 
 - 홈 화면에 **다가오는 알림** 추가
   - 일정, 기념일, 고정비, 할 일의 임박 항목을 모아 표시
@@ -18,11 +18,11 @@
 
 ## Supabase 적용
 
-v7은 DB 구조 변경이 없습니다.
+v8은 DB 구조 변경이 없습니다.
 
 이미 v6의 `supabase/update_v6.sql`을 실행했다면 추가 SQL 실행은 필요 없습니다.
 
-`supabase/update_v7.sql`은 안내용 파일입니다.
+`supabase/update_v7.sql`, `supabase/update_v8.sql`은 안내용 파일입니다.
 
 ## 로컬 실행
 
@@ -36,6 +36,14 @@ cd "프로젝트폴더"
 
 ```powershell
 git add .
-git commit -m "Add reminders search album features"
+git commit -m "Add backup restore feature"
 git push
 ```
+
+
+## v8 추가 기능
+
+- 설정 탭에서 현재 생활 그룹 JSON 백업 다운로드
+- JSON 백업 파일 업로드 후 복원 미리보기
+- 주요 데이터 복원 실행
+- 사진 파일 자체는 포함하지 않고 다이어리 사진 경로와 URL 메타데이터를 백업합니다.

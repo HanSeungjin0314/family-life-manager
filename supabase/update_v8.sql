@@ -1,0 +1,4 @@
+-- Together Life v8 안내
+-- v8은 백업/복원 UI 추가 버전입니다.
+-- Supabase DB 구조 변경은 없습니다.
+-- 이미 v6의 diary_photos / diary-photos Storage 설정까지 적용했다면 추가 SQL 실행은 필요 없습니다.

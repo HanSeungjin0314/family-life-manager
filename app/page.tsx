@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "../lib/supabaseClient";
@@ -93,6 +93,50 @@ const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + 
 const MAX_DIARY_PHOTOS = 5;
 const MAX_DIARY_PHOTO_SIZE_MB = 5;
 const MAX_DIARY_PHOTO_SIZE = MAX_DIARY_PHOTO_SIZE_MB * 1024 * 1024;
+
+type BackupPayload = {
+  app: "Together Life";
+  version: "8";
+  exported_at: string;
+  group: LifeGroup | null;
+  tables: Record<string, any[]>;
+};
+
+const backupTableLabels: Record<string, string> = {
+  group_members: "구성원",
+  group_invites: "초대코드",
+  categories: "카테고리",
+  accounts: "계좌",
+  budgets: "예산",
+  transactions: "거래내역",
+  fixed_expenses: "고정비",
+  tasks: "할 일",
+  shopping_items: "장보기",
+  goals: "목표",
+  calendar_events: "일정",
+  anniversary_events: "기념일",
+  diary_entries: "다이어리",
+  diary_photos: "다이어리 사진 정보",
+  settlement_records: "정산 기록"
+};
+
+const restoreOrder = [
+  "group_members",
+  "categories",
+  "accounts",
+  "budgets",
+  "transactions",
+  "fixed_expenses",
+  "tasks",
+  "shopping_items",
+  "goals",
+  "calendar_events",
+  "anniversary_events",
+  "diary_entries",
+  "diary_photos",
+  "settlement_records",
+  "group_invites"
+];
 
 const seedCategories = [
   { name: "식비", type: "expense", color: "#f97316", sort_order: 1 },
@@ -210,6 +254,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
   const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "search" | "settings">("home");
   const [searchQuery, setSearchQuery] = useState("");
+  const [backupPreview, setBackupPreview] = useState<BackupPayload | null>(null);
+  const [backupFileName, setBackupFileName] = useState("");
+  const [restoreInputKey, setRestoreInputKey] = useState(0);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -981,6 +1028,99 @@ function FamilyLifeApp({ session }: { session: Session }) {
     showNotice({ type: "success", text: "이번 달 정산 기록을 생성했습니다." });
   };
 
+
+  const buildBackupPayload = (): BackupPayload => ({
+    app: "Together Life",
+    version: "8",
+    exported_at: new Date().toISOString(),
+    group: selectedGroup,
+    tables: {
+      group_members: members,
+      group_invites: invites,
+      categories,
+      accounts,
+      budgets,
+      transactions,
+      fixed_expenses: fixedExpenses,
+      tasks,
+      shopping_items: shoppingItems,
+      goals,
+      calendar_events: calendarEvents,
+      anniversary_events: anniversaryEvents,
+      diary_entries: diaryEntries,
+      diary_photos: diaryPhotos,
+      settlement_records: settlementRecords
+    }
+  });
+
+  const downloadBackup = () => {
+    if (!selectedGroupId || !selectedGroup || !requireAdmin()) return;
+    const payload = buildBackupPayload();
+    const safeGroupName = selectedGroup.name.replace(/[^a-zA-Z0-9가-힣_-]/g, "_").slice(0, 30) || "group";
+    const fileName = `together-life-backup-${safeGroupName}-${today()}.json`;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    showNotice({ type: "success", text: "현재 그룹 백업 파일을 다운로드했습니다." });
+  };
+
+  const handleBackupFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as BackupPayload;
+      if (parsed.app !== "Together Life" || !parsed.tables) {
+        throw new Error("Together Life 백업 파일 형식이 아닙니다.");
+      }
+      setBackupPreview(parsed);
+      setBackupFileName(file.name);
+      showNotice({ type: "success", text: "백업 파일을 읽었습니다. 복원 미리보기를 확인하세요." });
+    } catch (error) {
+      setBackupPreview(null);
+      setBackupFileName("");
+      showNotice({ type: "error", text: error instanceof Error ? error.message : "백업 파일을 읽지 못했습니다." });
+    }
+  };
+
+  const restoreBackup = async () => {
+    if (!supabase || !selectedGroupId || !backupPreview || !requireAdmin()) return;
+    const totalRows = Object.values(backupPreview.tables).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
+    if (totalRows === 0) return showNotice({ type: "info", text: "복원할 데이터가 없습니다." });
+    if (!window.confirm(`현재 선택한 그룹에 백업 데이터 ${totalRows.toLocaleString("ko-KR")}건을 복원할까요? 같은 ID의 데이터는 갱신됩니다.`)) return;
+
+    setLoading(true);
+    for (const tableName of restoreOrder) {
+      const rows = backupPreview.tables[tableName] ?? [];
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+      const cleanRows = rows.map((row) => {
+        const { created_at, completed_at, ...rest } = row as Record<string, unknown>;
+        const nextRow: Record<string, unknown> = { ...rest, group_id: selectedGroupId };
+        if (completed_at) nextRow.completed_at = completed_at;
+        return nextRow;
+      });
+      const { error } = await supabase.from(tableName).upsert(cleanRows, { onConflict: "id" });
+      if (error) {
+        setLoading(false);
+        showNotice({ type: "error", text: `${backupTableLabels[tableName] ?? tableName} 복원 실패: ${error.message}` });
+        return;
+      }
+    }
+
+    setLoading(false);
+    setBackupPreview(null);
+    setBackupFileName("");
+    setRestoreInputKey((value) => value + 1);
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "백업 데이터를 복원했습니다." });
+  };
+
   const categoryStats = useMemo(() => {
     const expenseTotal = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + Number(item.amount), 0);
     return categories
@@ -1517,6 +1657,28 @@ function FamilyLifeApp({ session }: { session: Session }) {
                     </li>
                   ))}
                 </List>
+              </Card>
+
+              <Card title="백업·복원" description="현재 선택한 그룹 데이터를 JSON 파일로 저장하거나 복원합니다.">
+                <div className="stack-form">
+                  <p className="line-item">백업 대상: 구성원, 카테고리, 계좌, 예산, 거래내역, 고정비, 일정, 기념일, 다이어리, 사진 정보, 장보기, 할 일, 목표, 정산 기록</p>
+                  <p className="line-item">사진 파일 자체는 포함하지 않고 Supabase Storage 경로와 URL 정보만 저장합니다.</p>
+                  <button type="button" onClick={downloadBackup} disabled={!canAdmin}>현재 그룹 백업 다운로드</button>
+                  <input key={restoreInputKey} type="file" accept="application/json,.json" onChange={handleBackupFile} disabled={!canAdmin} />
+                  {backupPreview && (
+                    <div className="backup-preview">
+                      <strong>복원 미리보기: {backupFileName}</strong>
+                      <small>백업 그룹: {backupPreview.group?.name ?? "그룹 정보 없음"}</small>
+                      <small>생성일: {new Date(backupPreview.exported_at).toLocaleString("ko-KR")}</small>
+                      <div className="backup-counts">
+                        {restoreOrder.map((tableName) => (
+                          <span key={tableName}>{backupTableLabels[tableName] ?? tableName}: {(backupPreview.tables[tableName] ?? []).length}건</span>
+                        ))}
+                      </div>
+                      <button type="button" className="secondary" onClick={restoreBackup} disabled={!canAdmin || loading}>미리보기 데이터 복원 실행</button>
+                    </div>
+                  )}
+                </div>
               </Card>
             </section>
           </>
