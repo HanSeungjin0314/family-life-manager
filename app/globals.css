@@ -232,3 +232,10 @@ textarea { resize: vertical; min-height: 76px; }
 @media (max-width: 760px) { .history-filter { grid-template-columns: 1fr; } }
 .form-help { margin: 0; color: var(--muted); font-size: 12px; align-self: center; }
 .item-memo { display: block; margin-top: 4px; color: var(--muted); font-style: normal; font-size: 12px; line-height: 1.4; white-space: normal; }
+
+/* v21 car / places additions */
+.maintenance-list, .place-list { display: grid; gap: 12px; margin-top: 14px; }
+.maintenance-item, .place-item { border: 1px solid var(--line); background: #f9fafb; border-radius: 16px; padding: 12px; display: grid; gap: 8px; }
+.maintenance-item small { color: var(--muted); line-height: 1.4; }
+.map-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; padding: 7px 10px; background: #eef2ff; color: var(--primary-dark); font-weight: 900; text-decoration: none; font-size: 13px; }
+.map-link:hover { background: #e0e7ff; }

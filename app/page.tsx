@@ -68,6 +68,10 @@ type SettlementRecord = {
   completed_at: string | null;
 };
 
+type Vehicle = { id: string; group_id: string; name: string; plate_number: string | null; current_km: number; memo: string | null; created_at?: string };
+type VehicleMaintenanceItem = { id: string; group_id: string; vehicle_id: string; item_name: string; interval_km: number; last_service_km: number; last_service_date: string | null; memo: string | null; created_at?: string };
+type PlaceRecord = { id: string; group_id: string; name: string; place_type: string; visit_date: string | null; address: string | null; google_maps_url: string | null; rating: number | null; memo: string | null; created_at?: string };
+
 
 const FIELD_LIMITS = {
   email: 120,
@@ -93,6 +97,14 @@ const FIELD_LIMITS = {
   shoppingQuantity: 30,
   taskTitle: 80,
   goalTitle: 80,
+  vehicleName: 50,
+  vehiclePlate: 20,
+  maintenanceItem: 50,
+  placeName: 80,
+  placeAddress: 150,
+  placeUrl: 300,
+  placeMemo: 300,
+  memo: 300,
   money: 16
 };
 const limitText = (value: string, max: number) => String(value).slice(0, max);
@@ -261,6 +273,8 @@ const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase() + 
 const MAX_DIARY_PHOTOS = 5;
 const MAX_DIARY_PHOTO_SIZE_MB = 5;
 const MAX_DIARY_PHOTO_SIZE = MAX_DIARY_PHOTO_SIZE_MB * 1024 * 1024;
+const googleMapsSearchUrl = (query: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+const mapsUrlForPlace = (place: Pick<PlaceRecord, "name" | "address" | "google_maps_url">) => place.google_maps_url || googleMapsSearchUrl([place.name, place.address].filter(Boolean).join(" "));
 
 type BackupPayload = {
   app: "Together Life";
@@ -285,7 +299,10 @@ const backupTableLabels: Record<string, string> = {
   anniversary_events: "기념일",
   diary_entries: "다이어리",
   diary_photos: "다이어리 사진 정보",
-  settlement_records: "정산 기록"
+  settlement_records: "정산 기록",
+  vehicles: "차량",
+  vehicle_maintenance_items: "차량 관리품목",
+  place_records: "맛집/장소 기록"
 };
 
 const restoreOrder = [
@@ -303,6 +320,9 @@ const restoreOrder = [
   "diary_entries",
   "diary_photos",
   "settlement_records",
+  "vehicles",
+  "vehicle_maintenance_items",
+  "place_records",
   "group_invites"
 ];
 
@@ -419,8 +439,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
   const [diaryPhotos, setDiaryPhotos] = useState<DiaryPhoto[]>([]);
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [vehicleMaintenanceItems, setVehicleMaintenanceItems] = useState<VehicleMaintenanceItem[]>([]);
+  const [placeRecords, setPlaceRecords] = useState<PlaceRecord[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
-  const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "search" | "settings">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "car" | "places" | "search" | "settings">("home");
   const [searchQuery, setSearchQuery] = useState("");
   const [transactionHistoryPeriod, setTransactionHistoryPeriod] = useState<"month" | "all">("month");
   const [transactionHistoryType, setTransactionHistoryType] = useState<"all" | "income" | "expense">("all");
@@ -461,6 +484,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [diaryForm, setDiaryForm] = useState({ title: "", diary_date: today(), mood: "normal", content: "", visibility: "group", author_member_id: "" });
   const [diaryPhotoFiles, setDiaryPhotoFiles] = useState<File[]>([]);
   const [photoInputKey, setPhotoInputKey] = useState(0);
+  const [vehicleForm, setVehicleForm] = useState({ name: "", plate_number: "", current_km: "0", memo: "" });
+  const [maintenanceForm, setMaintenanceForm] = useState({ vehicle_id: "", item_name: "엔진오일", interval_km: "10000", last_service_km: "0", last_service_date: today(), memo: "" });
+  const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", memo: "" });
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
@@ -506,7 +532,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const fetchGroupData = async (groupId: string) => {
     if (!supabase || !groupId) return;
     setLoading(true);
-    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes] = await Promise.all([
+    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes] = await Promise.all([
       supabase.from("group_members").select("*").eq("group_id", groupId).order("created_at", { ascending: true }),
       supabase.from("group_invites").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
       supabase.from("categories").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
@@ -521,10 +547,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
       supabase.from("anniversary_events").select("*").eq("group_id", groupId).order("anniversary_date", { ascending: true }),
       supabase.from("diary_entries").select("*").eq("group_id", groupId).order("diary_date", { ascending: false }),
       supabase.from("diary_photos").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
-      supabase.from("settlement_records").select("*").eq("group_id", groupId).order("created_at", { ascending: false })
+      supabase.from("settlement_records").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
+      supabase.from("vehicles").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
+      supabase.from("vehicle_maintenance_items").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
+      supabase.from("place_records").select("*").eq("group_id", groupId).order("visit_date", { ascending: false })
     ]);
     setLoading(false);
-    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes].find((res) => res.error)?.error;
+    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes].find((res) => res.error)?.error;
     if (firstError) return showNotice({ type: "error", text: firstError.message });
     setMembers((memberRes.data ?? []) as GroupMember[]);
     setInvites((inviteRes.data ?? []) as GroupInvite[]);
@@ -541,6 +570,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     setDiaryEntries((diaryRes.data ?? []) as DiaryEntry[]);
     setDiaryPhotos((diaryPhotoRes.data ?? []) as DiaryPhoto[]);
     setSettlementRecords((settlementRes.data ?? []) as SettlementRecord[]);
+    setVehicles((vehicleRes.data ?? []) as Vehicle[]);
+    setVehicleMaintenanceItems((maintenanceRes.data ?? []) as VehicleMaintenanceItem[]);
+    setPlaceRecords((placeRes.data ?? []) as PlaceRecord[]);
   };
 
   useEffect(() => { fetchGroups(); }, []);
@@ -565,6 +597,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
       setFixedForm((prev) => prev.account_id ? prev : { ...prev, account_id: firstAccount });
     }
   }, [accounts]);
+
+  useEffect(() => {
+    const firstVehicle = vehicles[0]?.id ?? "";
+    if (firstVehicle) setMaintenanceForm((prev) => prev.vehicle_id ? prev : { ...prev, vehicle_id: firstVehicle });
+  }, [vehicles]);
 
   const createGroup = async (event: FormEvent) => {
     event.preventDefault();
@@ -764,6 +801,182 @@ function FamilyLifeApp({ session }: { session: Session }) {
     setGoalForm({ title: "", target_amount: "0", current_amount: "0", target_date: "", memo: "" });
     await fetchGroupData(selectedGroupId);
   };
+
+  const addVehicle = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!vehicleForm.name.trim()) return showNotice({ type: "error", text: "차량명을 입력하세요." });
+    const { error } = await supabase.from("vehicles").insert({
+      group_id: selectedGroupId,
+      name: vehicleForm.name.trim(),
+      plate_number: vehicleForm.plate_number.trim() || null,
+      current_km: asNumber(vehicleForm.current_km),
+      memo: vehicleForm.memo.trim() || null
+    });
+    if (error) return showNotice({ type: "error", text: error.message });
+    setVehicleForm({ name: "", plate_number: "", current_km: "0", memo: "" });
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const updateVehicleKm = async (vehicle: Vehicle) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const next = window.prompt("현재 KM를 입력하세요.", String(vehicle.current_km ?? 0));
+    if (next === null) return;
+    const { error } = await supabase.from("vehicles").update({ current_km: asNumber(next) }).eq("id", vehicle.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const editVehicle = async (vehicle: Vehicle) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const name = window.prompt("차량명을 수정하세요.", vehicle.name ?? "");
+    if (name === null) return;
+    if (!name.trim()) return showNotice({ type: "error", text: "차량명은 비울 수 없습니다." });
+    const plate = window.prompt("차량번호를 수정하세요. 비우면 삭제됩니다.", vehicle.plate_number ?? "");
+    if (plate === null) return;
+    const currentKm = window.prompt("현재 KM를 수정하세요.", String(vehicle.current_km ?? 0));
+    if (currentKm === null) return;
+    const memo = window.prompt("차량 메모를 수정하세요. 비우면 삭제됩니다.", vehicle.memo ?? "");
+    if (memo === null) return;
+    const { error } = await supabase.from("vehicles").update({
+      name: limitText(name.trim(), FIELD_LIMITS.vehicleName),
+      plate_number: plate.trim() ? limitText(plate.trim(), FIELD_LIMITS.vehiclePlate) : null,
+      current_km: asNumber(currentKm),
+      memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.memo) : null
+    }).eq("id", vehicle.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "차량 정보를 수정했습니다." });
+  };
+
+
+  const addVehicleMaintenanceItem = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!maintenanceForm.vehicle_id) return showNotice({ type: "error", text: "차량을 먼저 선택하세요." });
+    if (!maintenanceForm.item_name.trim()) return showNotice({ type: "error", text: "관리품목을 입력하세요." });
+    const { error } = await supabase.from("vehicle_maintenance_items").insert({
+      group_id: selectedGroupId,
+      vehicle_id: maintenanceForm.vehicle_id,
+      item_name: maintenanceForm.item_name.trim(),
+      interval_km: asNumber(maintenanceForm.interval_km),
+      last_service_km: asNumber(maintenanceForm.last_service_km),
+      last_service_date: maintenanceForm.last_service_date || null,
+      memo: maintenanceForm.memo.trim() || null
+    });
+    if (error) return showNotice({ type: "error", text: error.message });
+    setMaintenanceForm((prev) => ({ ...prev, item_name: "", interval_km: "10000", last_service_km: "0", last_service_date: today(), memo: "" }));
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const updateMaintenanceLastKm = async (item: VehicleMaintenanceItem) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const next = window.prompt("마지막 교체/관리 KM를 입력하세요.", String(item.last_service_km ?? 0));
+    if (next === null) return;
+    const { error } = await supabase.from("vehicle_maintenance_items").update({ last_service_km: asNumber(next), last_service_date: today() }).eq("id", item.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const askVehicleId = (currentVehicleId: string) => {
+    const vehicleLines = vehicles.map((vehicle, index) => `${index + 1}. ${vehicle.name}${vehicle.plate_number ? ` (${vehicle.plate_number})` : ""}`).join("\n");
+    const currentIndex = vehicles.findIndex((vehicle) => vehicle.id === currentVehicleId);
+    const next = window.prompt(
+      `차량을 수정하세요.\n번호를 입력하거나 차량명을 입력하세요.\n\n${vehicleLines || "등록된 차량이 없습니다."}`,
+      currentIndex >= 0 ? String(currentIndex + 1) : ""
+    );
+    if (next === null) return undefined;
+    const trimmed = next.trim();
+    if (!trimmed) return currentVehicleId;
+    const index = Number(trimmed) - 1;
+    if (Number.isInteger(index) && vehicles[index]) return vehicles[index].id;
+    const matched = vehicles.find((vehicle) => vehicle.name === trimmed || vehicle.id === trimmed || vehicle.plate_number === trimmed);
+    if (matched) return matched.id;
+    showNotice({ type: "error", text: "일치하는 차량을 찾지 못했습니다." });
+    return undefined;
+  };
+
+  const editVehicleMaintenanceItem = async (item: VehicleMaintenanceItem) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const vehicleId = askVehicleId(item.vehicle_id);
+    if (vehicleId === undefined) return;
+    const itemName = window.prompt("관리품목명을 수정하세요.", item.item_name ?? "");
+    if (itemName === null) return;
+    if (!itemName.trim()) return showNotice({ type: "error", text: "관리품목명은 비울 수 없습니다." });
+    const intervalKm = window.prompt("교체/관리 주기 KM를 수정하세요.", String(item.interval_km ?? 0));
+    if (intervalKm === null) return;
+    const lastKm = window.prompt("마지막 관리 KM를 수정하세요.", String(item.last_service_km ?? 0));
+    if (lastKm === null) return;
+    const lastDate = window.prompt("마지막 관리 날짜를 수정하세요. 비우면 삭제됩니다.", item.last_service_date ?? "");
+    if (lastDate === null) return;
+    const memo = window.prompt("관리 메모를 수정하세요. 비우면 삭제됩니다.", item.memo ?? "");
+    if (memo === null) return;
+    const { error } = await supabase.from("vehicle_maintenance_items").update({
+      vehicle_id: vehicleId,
+      item_name: limitText(itemName.trim(), FIELD_LIMITS.maintenanceItem),
+      interval_km: asNumber(intervalKm),
+      last_service_km: asNumber(lastKm),
+      last_service_date: lastDate.trim() || null,
+      memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.memo) : null
+    }).eq("id", item.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "관리품목을 수정했습니다." });
+  };
+
+
+  const addPlaceRecord = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!placeForm.name.trim()) return showNotice({ type: "error", text: "장소명을 입력하세요." });
+    const { error } = await supabase.from("place_records").insert({
+      group_id: selectedGroupId,
+      name: placeForm.name.trim(),
+      place_type: placeForm.place_type,
+      visit_date: placeForm.visit_date || null,
+      address: placeForm.address.trim() || null,
+      google_maps_url: placeForm.google_maps_url.trim() || null,
+      rating: Math.max(0, Math.min(5, asNumber(placeForm.rating))),
+      memo: placeForm.memo.trim() || null
+    });
+    if (error) return showNotice({ type: "error", text: error.message });
+    setPlaceForm({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", memo: "" });
+    await fetchGroupData(selectedGroupId);
+  };
+
+  const editPlaceRecord = async (place: PlaceRecord) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const name = window.prompt("장소명을 수정하세요.", place.name ?? "");
+    if (name === null) return;
+    if (!name.trim()) return showNotice({ type: "error", text: "장소명은 비울 수 없습니다." });
+    const typeText = window.prompt("구분을 수정하세요. 맛집/카페/가본곳/가고싶은곳 중 하나를 입력하세요.", place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳");
+    if (typeText === null) return;
+    const typeMap: Record<string, string> = { "맛집": "restaurant", "restaurant": "restaurant", "카페": "cafe", "cafe": "cafe", "가본곳": "visited", "visited": "visited", "가고싶은곳": "wishlist", "wishlist": "wishlist" };
+    const nextType = typeMap[typeText.trim()] ?? place.place_type;
+    const visitDate = window.prompt("방문일을 수정하세요. 비우면 날짜 없음으로 저장됩니다.", place.visit_date ?? "");
+    if (visitDate === null) return;
+    const address = window.prompt("주소 또는 지역을 수정하세요. 비우면 삭제됩니다.", place.address ?? "");
+    if (address === null) return;
+    const url = window.prompt("Google 지도 링크를 수정하세요. 비우면 검색 링크로 대체됩니다.", place.google_maps_url ?? "");
+    if (url === null) return;
+    const rating = window.prompt("평점을 수정하세요. 0~5 사이 숫자입니다.", String(place.rating ?? 0));
+    if (rating === null) return;
+    const memo = window.prompt("장소 메모를 수정하세요. 비우면 삭제됩니다.", place.memo ?? "");
+    if (memo === null) return;
+    const { error } = await supabase.from("place_records").update({
+      name: limitText(name.trim(), FIELD_LIMITS.placeName),
+      place_type: nextType,
+      visit_date: visitDate.trim() || null,
+      address: address.trim() ? limitText(address.trim(), FIELD_LIMITS.placeAddress) : null,
+      google_maps_url: url.trim() ? limitText(url.trim(), FIELD_LIMITS.placeUrl) : null,
+      rating: Math.max(0, Math.min(5, asNumber(rating))),
+      memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.placeMemo) : null
+    }).eq("id", place.id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: "장소 기록을 수정했습니다." });
+  };
+
 
   const addCalendarEvent = async (event: FormEvent) => {
     event.preventDefault();
@@ -1557,7 +1770,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       anniversary_events: anniversaryEvents,
       diary_entries: diaryEntries,
       diary_photos: diaryPhotos,
-      settlement_records: settlementRecords
+      settlement_records: settlementRecords,
+      vehicles,
+      vehicle_maintenance_items: vehicleMaintenanceItems,
+      place_records: placeRecords
     }
   });
 
@@ -1724,6 +1940,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
           <button type="button" className={`tab-button ${activeTab === "diary" ? "active" : ""}`} onClick={() => setActiveTab("diary")}>다이어리</button>
           <button type="button" className={`tab-button ${activeTab === "album" ? "active" : ""}`} onClick={() => setActiveTab("album")}>사진앨범</button>
           <button type="button" className={`tab-button ${activeTab === "life" ? "active" : ""}`} onClick={() => setActiveTab("life")}>생활</button>
+          <button type="button" className={`tab-button ${activeTab === "car" ? "active" : ""}`} onClick={() => setActiveTab("car")}>차량관리</button>
+          <button type="button" className={`tab-button ${activeTab === "places" ? "active" : ""}`} onClick={() => setActiveTab("places")}>맛집·장소</button>
           <button type="button" className={`tab-button ${activeTab === "search" ? "active" : ""}`} onClick={() => setActiveTab("search")}>검색</button>
           <button type="button" className={`tab-button ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>설정</button>
         </div>
@@ -2084,6 +2302,92 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <p className="line-item">사진은 다이어리 1개당 최대 {MAX_DIARY_PHOTOS}장까지 첨부됩니다.</p>
                 <p className="line-item">현재 첨부된 전체 사진은 {diaryPhotos.length}장입니다.</p>
                 <p className="line-item">사진을 더 올리려면 다이어리 탭에서 기존 다이어리의 사진추가 버튼을 누르세요.</p>
+              </div>
+            </Card>
+          </section>
+        )}
+
+        {activeTab === "car" && (
+          <>
+            <section className="grid two">
+              <Card title="차량 등록" description="현재 KM를 넣으면 관리품목별 남은 KM를 막대그래프로 확인합니다.">
+                <form className="stack-form" onSubmit={addVehicle}>
+                  <input value={vehicleForm.name} onChange={(event) => setVehicleForm({ ...vehicleForm, name: limitText(event.target.value, FIELD_LIMITS.vehicleName) })} placeholder="차량명 예: 소나타" maxLength={FIELD_LIMITS.vehicleName} disabled={!canEdit} />
+                  <div className="form-row"><input value={vehicleForm.plate_number} onChange={(event) => setVehicleForm({ ...vehicleForm, plate_number: limitText(event.target.value, FIELD_LIMITS.vehiclePlate) })} placeholder="차량번호" maxLength={FIELD_LIMITS.vehiclePlate} disabled={!canEdit} /><input value={vehicleForm.current_km} onChange={(event) => setVehicleForm({ ...vehicleForm, current_km: formatMoneyInput(event.target.value) })} placeholder="현재 KM" disabled={!canEdit} /></div>
+                  <textarea value={vehicleForm.memo} onChange={(event) => setVehicleForm({ ...vehicleForm, memo: limitText(event.target.value, FIELD_LIMITS.memo) })} placeholder="차량 메모" maxLength={FIELD_LIMITS.memo} disabled={!canEdit} />
+                  <button disabled={!canEdit}>차량 저장</button>
+                </form>
+              </Card>
+
+              <Card title="관리품목 등록" description="엔진오일, 타이어, 브레이크오일처럼 KM 기준 관리 항목을 추가합니다.">
+                <form className="stack-form" onSubmit={addVehicleMaintenanceItem}>
+                  <select value={maintenanceForm.vehicle_id} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, vehicle_id: event.target.value })} disabled={!canEdit}>
+                    <option value="">차량 선택</option>{vehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}</option>)}
+                  </select>
+                  <input value={maintenanceForm.item_name} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, item_name: limitText(event.target.value, FIELD_LIMITS.maintenanceItem) })} placeholder="관리품목 예: 엔진오일" maxLength={FIELD_LIMITS.maintenanceItem} disabled={!canEdit} />
+                  <div className="form-row"><input value={maintenanceForm.interval_km} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, interval_km: formatMoneyInput(event.target.value) })} placeholder="교체 주기 KM" disabled={!canEdit} /><input value={maintenanceForm.last_service_km} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, last_service_km: formatMoneyInput(event.target.value) })} placeholder="마지막 관리 KM" disabled={!canEdit} /></div>
+                  <input type="date" value={maintenanceForm.last_service_date} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, last_service_date: event.target.value })} disabled={!canEdit} />
+                  <textarea value={maintenanceForm.memo} onChange={(event) => setMaintenanceForm({ ...maintenanceForm, memo: limitText(event.target.value, FIELD_LIMITS.memo) })} placeholder="관리 메모" maxLength={FIELD_LIMITS.memo} disabled={!canEdit} />
+                  <button disabled={!canEdit}>관리품목 저장</button>
+                </form>
+              </Card>
+            </section>
+
+            <section className="grid two">
+              {vehicles.length === 0 && <Card title="등록된 차량 없음" description="차량을 먼저 등록하세요."><p className="muted">차량을 등록하면 관리품목별 남은 KM가 표시됩니다.</p></Card>}
+              {vehicles.map((vehicle) => {
+                const items = vehicleMaintenanceItems.filter((item) => item.vehicle_id === vehicle.id);
+                return (
+                  <Card key={vehicle.id} title={`${vehicle.name}${vehicle.plate_number ? ` · ${vehicle.plate_number}` : ""}`} description={`현재 ${currency(vehicle.current_km).replace("원", "km")}`}>
+                    <div className="between"><span className="muted small">{vehicle.memo || "차량 메모 없음"}</span><div className="inline-actions"><button className="text-button" onClick={() => editVehicle(vehicle)} disabled={!canEdit}>수정</button><button className="text-button" onClick={() => updateVehicleKm(vehicle)} disabled={!canEdit}>KM수정</button><button className="text-button danger-text" onClick={() => removeRow("vehicles", vehicle.id)} disabled={!canEdit}>삭제</button></div></div>
+                    <div className="maintenance-list">
+                      {items.length === 0 && <p className="muted small">등록된 관리품목이 없습니다.</p>}
+                      {items.map((item) => {
+                        const usedKm = Math.max(0, Number(vehicle.current_km || 0) - Number(item.last_service_km || 0));
+                        const intervalKm = Math.max(1, Number(item.interval_km || 1));
+                        const remainKm = Math.max(0, intervalKm - usedKm);
+                        const percent = Math.min(100, Math.round((usedKm / intervalKm) * 100));
+                        return (
+                          <div className="maintenance-item" key={item.id}>
+                            <div className="between"><strong>{item.item_name}</strong><span>{remainKm.toLocaleString("ko-KR")}km 남음</span></div>
+                            <div className="progress"><span style={{ width: `${percent}%` }} /></div>
+                            <small>주기 {intervalKm.toLocaleString("ko-KR")}km · 사용 {usedKm.toLocaleString("ko-KR")}km · 마지막 {Number(item.last_service_km || 0).toLocaleString("ko-KR")}km</small>
+                            <div className="inline-actions"><button className="text-button" onClick={() => editVehicleMaintenanceItem(item)} disabled={!canEdit}>수정</button><button className="text-button" onClick={() => updateMaintenanceLastKm(item)} disabled={!canEdit}>관리완료</button><button className="text-button danger-text" onClick={() => removeRow("vehicle_maintenance_items", item.id)} disabled={!canEdit}>삭제</button></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                );
+              })}
+            </section>
+          </>
+        )}
+
+        {activeTab === "places" && (
+          <section className="grid two">
+            <Card title="맛집·카페·가본곳 기록" description="장소를 기록하고 Google 지도 링크로 바로 열 수 있습니다.">
+              <form className="stack-form" onSubmit={addPlaceRecord}>
+                <input value={placeForm.name} onChange={(event) => setPlaceForm({ ...placeForm, name: limitText(event.target.value, FIELD_LIMITS.placeName) })} placeholder="장소명" maxLength={FIELD_LIMITS.placeName} disabled={!canEdit} />
+                <div className="form-row"><select value={placeForm.place_type} onChange={(event) => setPlaceForm({ ...placeForm, place_type: event.target.value })} disabled={!canEdit}><option value="restaurant">맛집</option><option value="cafe">카페</option><option value="visited">가본곳</option><option value="wishlist">가고싶은곳</option></select><input type="date" value={placeForm.visit_date} onChange={(event) => setPlaceForm({ ...placeForm, visit_date: event.target.value })} disabled={!canEdit} /></div>
+                <input value={placeForm.address} onChange={(event) => setPlaceForm({ ...placeForm, address: limitText(event.target.value, FIELD_LIMITS.placeAddress) })} placeholder="주소 또는 지역" maxLength={FIELD_LIMITS.placeAddress} disabled={!canEdit} />
+                <input value={placeForm.google_maps_url} onChange={(event) => setPlaceForm({ ...placeForm, google_maps_url: limitText(event.target.value, FIELD_LIMITS.placeUrl) })} placeholder="Google 지도 공유 링크 선택 입력" maxLength={FIELD_LIMITS.placeUrl} disabled={!canEdit} />
+                <div className="form-row"><input value={placeForm.rating} onChange={(event) => setPlaceForm({ ...placeForm, rating: event.target.value.replace(/[^0-5]/g, "").slice(0, 1) })} placeholder="평점 0~5" disabled={!canEdit} /><textarea value={placeForm.memo} onChange={(event) => setPlaceForm({ ...placeForm, memo: limitText(event.target.value, FIELD_LIMITS.placeMemo) })} placeholder="메뉴, 분위기, 주차, 재방문의사" maxLength={FIELD_LIMITS.placeMemo} disabled={!canEdit} /></div>
+                <button disabled={!canEdit}>장소 저장</button>
+              </form>
+            </Card>
+
+            <Card title="장소 목록" description="기록한 장소를 Google 지도에서 바로 확인합니다.">
+              <div className="place-list">
+                {placeRecords.length === 0 && <p className="muted">아직 저장된 장소가 없습니다.</p>}
+                {placeRecords.map((place) => (
+                  <article className="place-item" key={place.id}>
+                    <div className="between"><strong>{place.name}</strong><span>{place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳"} · ★{place.rating ?? 0}</span></div>
+                    <p className="muted small">{place.visit_date || "날짜 없음"} · {place.address || "주소 없음"}</p>
+                    {place.memo && <p className="line-item">{place.memo}</p>}
+                    <div className="inline-actions"><a className="map-link" href={mapsUrlForPlace(place)} target="_blank" rel="noreferrer">Google 지도 열기</a><button className="text-button" onClick={() => editPlaceRecord(place)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("place_records", place.id)} disabled={!canEdit}>삭제</button></div>
+                  </article>
+                ))}
               </div>
             </Card>
           </section>
