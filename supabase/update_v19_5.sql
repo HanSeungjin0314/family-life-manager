@@ -1,0 +1,3 @@
+-- Together Life v19.5
+-- 개인 지출 거래 수정/삭제 권한 보정용 안내 파일입니다.
+-- DB 구조 변경이 없으므로 Supabase SQL Editor에서 실행할 필요 없습니다.

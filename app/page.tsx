@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "../lib/supabaseClient";
 
-type Role = "owner" | "admin" | "member" | "viewer";
+type Role = "owner" | "partner" | "admin" | "member" | "viewer";
 type Notice = { type: "success" | "error" | "info"; text: string };
 
 type LifeGroup = { id: string; owner_id: string; name: string; group_type: string; memo: string | null; created_at: string };
@@ -46,6 +46,7 @@ type FixedExpense = {
   repeat_until: string | null;
   is_active: boolean;
   memo: string | null;
+  created_by?: string | null;
 };
 type Task = { id: string; group_id: string; title: string; assigned_to_member_id: string | null; due_date: string | null; repeat_type: string; is_done: boolean; memo: string | null };
 type ShoppingItem = { id: string; group_id: string; item_name: string; quantity: string | null; added_by_member_id: string | null; is_done: boolean; memo: string | null };
@@ -432,10 +433,10 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [groupForm, setGroupForm] = useState({ name: "우리집", group_type: "family", display_name: "나" });
+  const [groupForm, setGroupForm] = useState({ name: "우리집", group_type: "couple", display_name: "나" });
   const [joinForm, setJoinForm] = useState({ code: "", display_name: "" });
-  const [memberForm, setMemberForm] = useState({ display_name: "", role: "member" as Role });
-  const [inviteForm, setInviteForm] = useState({ role: "member" as Role, memo: "" });
+  const [memberForm, setMemberForm] = useState({ display_name: "", role: "partner" as Role });
+  const [inviteForm, setInviteForm] = useState({ role: "partner" as Role, memo: "" });
   const [categoryForm, setCategoryForm] = useState({ name: "", type: "expense", color: "#4f46e5" });
   const [accountForm, setAccountForm] = useState({ name: "", account_type: "bank", owner_member_id: "", balance: "0", memo: "" });
   const [budgetForm, setBudgetForm] = useState({ name: "", budget_month: `${thisMonth()}-01`, category_id: "", limit_amount: "0", scope: "shared" });
@@ -463,11 +464,16 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
-  const currentRole: Role = selectedGroup?.owner_id === currentUserId ? "owner" : currentMember?.role ?? "viewer";
-  const canAdmin = currentRole === "owner" || currentRole === "admin";
-  const canEdit = canAdmin || currentRole === "member";
+  const currentRole: Role = selectedGroup?.owner_id === currentUserId ? "owner" : currentMember ? "partner" : "viewer";
+  const canAdmin = currentRole === "owner";
+  const canEdit = currentRole === "owner" || currentRole === "partner";
   const isOwner = currentRole === "owner";
-  const canViewPersonal = isOwner;
+  const canViewPersonal = canEdit;
+  const isOwnMemberId = (memberId: string | null | undefined) => !!memberId && members.some((member) => member.id === memberId && member.user_id === currentUserId);
+  const isOwnPersonalTransaction = (item: Transaction) => transactionScopeOf(item) === "personal" && (item.created_by === currentUserId || isOwnMemberId(item.paid_by_member_id));
+  const isOwnPersonalFixedExpense = (item: FixedExpense) => fixedScopeOf(item) === "personal" && (item.created_by === currentUserId || isOwnMemberId(item.paid_by_member_id));
+  const canManageTransaction = (item: Transaction) => transactionScopeOf(item) === "personal" ? isOwnPersonalTransaction(item) : canEdit;
+  const canManageFixedExpense = (item: FixedExpense) => fixedScopeOf(item) === "personal" ? isOwnPersonalFixedExpense(item) : canEdit;
 
   const memberName = (id: string | null) => members.find((member) => member.id === id)?.display_name ?? "-";
   const categoryName = (id: string | null) => categories.find((category) => category.id === id)?.name ?? "미분류";
@@ -479,12 +485,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const requireEdit = () => {
     if (canEdit) return true;
-    showNotice({ type: "error", text: "조회 전용 권한입니다. 저장·수정·삭제는 관리자에게 요청하세요." });
+    showNotice({ type: "error", text: "파트너 권한이 필요합니다." });
     return false;
   };
   const requireAdmin = () => {
     if (canAdmin) return true;
-    showNotice({ type: "error", text: "관리자 권한이 필요합니다." });
+    showNotice({ type: "error", text: "소유자 권한이 필요합니다." });
     return false;
   };
 
@@ -606,9 +612,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireAdmin()) return;
     if (!memberForm.display_name.trim()) return showNotice({ type: "error", text: "구성원 이름을 입력하세요." });
-    const { error } = await supabase.from("group_members").insert({ group_id: selectedGroupId, display_name: memberForm.display_name.trim(), role: memberForm.role, member_type: "display_only" });
+    const { error } = await supabase.from("group_members").insert({ group_id: selectedGroupId, display_name: memberForm.display_name.trim(), role: "partner", member_type: "display_only" });
     if (error) return showNotice({ type: "error", text: error.message });
-    setMemberForm({ display_name: "", role: "member" });
+    setMemberForm({ display_name: "", role: "partner" });
     await fetchGroupData(selectedGroupId);
   };
 
@@ -624,9 +630,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireAdmin()) return;
     const code = randomCode();
-    const { error } = await supabase.from("group_invites").insert({ group_id: selectedGroupId, code, role: inviteForm.role, memo: inviteForm.memo || null, created_by: currentUserId });
+    const { error } = await supabase.from("group_invites").insert({ group_id: selectedGroupId, code, role: "partner", memo: inviteForm.memo || null, created_by: currentUserId });
     if (error) return showNotice({ type: "error", text: error.message });
-    setInviteForm({ role: "member", memo: "" });
+    setInviteForm({ role: "partner", memo: "" });
     await fetchGroupData(selectedGroupId);
     showNotice({ type: "success", text: `초대코드 ${code} 생성 완료` });
   };
@@ -661,10 +667,10 @@ function FamilyLifeApp({ session }: { session: Session }) {
     await fetchGroupData(selectedGroupId);
   };
 
-  const transactionBalanceDelta = (type: Transaction["type"], amount: number) => {
-    if (type === "income") return Math.abs(amount);
-    if (type === "expense") return -Math.abs(amount);
-    return 0;
+  const transactionBalanceDelta = (type: Transaction["type"] | string, amount: number) => {
+    const normalizedType = transactionTypeOf({ type });
+    if (normalizedType === "income") return Math.abs(amount);
+    return -Math.abs(amount);
   };
 
   const adjustAccountBalance = async (accountId: string | null, delta: number) => {
@@ -717,9 +723,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const addFixedExpense = async (event: FormEvent) => {
     event.preventDefault();
-    if (!supabase || !selectedGroupId || !requireAdmin()) return;
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!fixedForm.title.trim()) return;
-    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, title: fixedForm.title.trim(), scope: canViewPersonal ? fixedForm.scope : "shared", start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
+    const { error } = await supabase.from("fixed_expenses").insert({ group_id: selectedGroupId, created_by: currentUserId, title: fixedForm.title.trim(), scope: canViewPersonal ? fixedForm.scope : "shared", start_date: fixedForm.start_date, next_payment_date: fixedForm.next_payment_date || null, amount: asNumber(fixedForm.amount), category_id: fixedForm.category_id || null, account_id: fixedForm.account_id || null, paid_by_member_id: fixedForm.paid_by_member_id || null, repeat_enabled: fixedForm.repeat_enabled, repeat_type: fixedForm.repeat_enabled ? fixedForm.repeat_type : "none", repeat_until: fixedForm.repeat_enabled && fixedForm.repeat_until ? fixedForm.repeat_until : null, memo: fixedForm.memo || null });
     if (error) return showNotice({ type: "error", text: error.message });
     setFixedForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", repeat_until: "" }));
     await fetchGroupData(selectedGroupId);
@@ -1022,7 +1028,28 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const editTransaction = async (item: Transaction) => {
-    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    if (!supabase || !selectedGroupId) return;
+    if (!canManageTransaction(item)) {
+      showNotice({ type: "error", text: transactionScopeOf(item) === "personal" ? "본인 개인 지출만 수정할 수 있습니다." : "거래 수정 권한이 없습니다." });
+      return;
+    }
+
+    const currentType = transactionTypeOf(item);
+    const typeInput = window.prompt("거래 구분을 수정하세요. 수입 또는 지출", currentType === "income" ? "수입" : "지출");
+    if (typeInput === null) return;
+    const typeText = typeInput.trim().toLowerCase();
+    const nextType: Transaction["type"] = typeText.includes("수") || typeText.includes("income") || typeText.startsWith("i") ? "income" : "expense";
+
+    const currentScope = transactionScopeOf(item);
+    const scopeInput = window.prompt("거래 범위를 수정하세요. 공동 또는 개인", currentScope === "personal" ? "개인" : "공동");
+    if (scopeInput === null) return;
+    const scopeText = scopeInput.trim().toLowerCase();
+    const nextScope: Transaction["scope"] = scopeText.includes("개") || scopeText.includes("personal") || scopeText.startsWith("p") ? "personal" : "shared";
+    if (nextScope === "personal" && !canEdit) {
+      showNotice({ type: "error", text: "개인 지출을 작성할 권한이 없습니다." });
+      return;
+    }
+
     const title = askText("거래 내용을 수정하세요.", item.title, FIELD_LIMITS.transactionTitle);
     if (!title) return;
     const amount = askMoney("금액을 수정하세요.", item.amount);
@@ -1036,16 +1063,29 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const memo = askText("세부내용을 수정하세요.", item.memo ?? "", FIELD_LIMITS.transactionMemo);
     if (memo === null) return;
 
+    let settlementRequired = false;
+    if (nextType === "expense" && nextScope === "shared") {
+      const settlementInput = window.prompt("공동 지출 정산 대상으로 둘까요? Y/N", item.settlement_required ? "Y" : "N");
+      if (settlementInput === null) return;
+      const normalizedSettlement = settlementInput.trim().toLowerCase();
+      settlementRequired = normalizedSettlement === "y" || normalizedSettlement === "yes" || normalizedSettlement === "1" || normalizedSettlement.includes("예") || normalizedSettlement.includes("체크");
+    }
+
     const reverseError = await reverseTransactionFromAccount(item);
     if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
 
     const patch = {
       title,
+      type: nextType,
+      scope: nextScope,
       amount,
       transaction_date: transactionDate,
       account_id: accountId,
       category_id: categoryId,
-      memo: memo || null
+      settlement_required: settlementRequired,
+      split_method: settlementRequired ? "equal" : "none",
+      memo: memo || null,
+      created_by: nextScope === "personal" ? currentUserId : item.created_by
     };
     const { error } = await supabase.from("transactions").update(patch).eq("id", item.id);
     if (error) {
@@ -1053,13 +1093,14 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return showNotice({ type: "error", text: error.message });
     }
 
-    const balanceError = await applyTransactionToAccount({ type: item.type, amount, account_id: accountId });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: accountId });
     if (balanceError) return showNotice({ type: "error", text: `거래는 수정됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
     await fetchGroupData(selectedGroupId);
     showNotice({ type: "success", text: "거래 수정과 계좌 잔액 재계산이 완료되었습니다." });
   };
 
   const editFixedExpense = async (item: FixedExpense) => {
+    if (!canManageFixedExpense(item)) return showNotice({ type: "error", text: fixedScopeOf(item) === "personal" ? "본인 개인 고정비만 수정할 수 있습니다." : "고정비 수정 권한이 없습니다." });
     const title = askText("고정비 이름을 수정하세요.", item.title, FIELD_LIMITS.fixedTitle);
     if (!title) return;
     const amount = askMoney("금액을 수정하세요.", item.amount);
@@ -1078,7 +1119,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       repeatType = ["daily", "weekly", "monthly", "yearly"].includes(inputRepeatType) ? inputRepeatType : "monthly";
       repeatUntil = askDate("언제까지 반복할까요? 비워두면 종료일 없음. 예: 2027-12-31", item.repeat_until ?? "") || null;
     }
-    await updateRow("fixed_expenses", item.id, { title, amount, scope, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil }, true);
+    await updateRow("fixed_expenses", item.id, { title, amount, scope, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil, created_by: scope === "personal" ? currentUserId : item.created_by ?? currentUserId }, false);
   };
 
   const editTask = async (task: Task) => {
@@ -1173,11 +1214,18 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
   const removeRow = async (table: string, id: string, adminOnly = false) => {
     if (!supabase || !selectedGroupId) return;
-    if (adminOnly && !requireAdmin()) return;
-    if (!adminOnly && !requireEdit()) return;
+    const targetTransaction = table === "transactions" ? transactions.find((item) => item.id === id) : null;
+    if (targetTransaction) {
+      if (!canManageTransaction(targetTransaction)) {
+        showNotice({ type: "error", text: transactionScopeOf(targetTransaction) === "personal" ? "본인 개인 지출만 삭제할 수 있습니다." : "거래 삭제 권한이 없습니다." });
+        return;
+      }
+    } else {
+      if (adminOnly && !requireAdmin()) return;
+      if (!adminOnly && !requireEdit()) return;
+    }
     if (!window.confirm("정말 삭제하시겠습니까?")) return;
 
-    const targetTransaction = table === "transactions" ? transactions.find((item) => item.id === id) : null;
     if (targetTransaction) {
       const reverseError = await reverseTransactionFromAccount(targetTransaction);
       if (reverseError) return showNotice({ type: "error", text: `계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
@@ -1213,14 +1261,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const visibleTransactions = useMemo(() => {
-    if (canViewPersonal) return transactions;
-    return transactions.filter((item) => transactionScopeOf(item) !== "personal");
-  }, [transactions, canViewPersonal]);
+    return transactions.filter((item) => transactionScopeOf(item) !== "personal" || isOwnPersonalTransaction(item));
+  }, [transactions, currentUserId, members]);
 
   const visibleFixedExpenses = useMemo(() => {
-    if (canViewPersonal) return fixedExpenses;
-    return fixedExpenses.filter((item) => fixedScopeOf(item) !== "personal");
-  }, [fixedExpenses, canViewPersonal]);
+    return fixedExpenses.filter((item) => fixedScopeOf(item) !== "personal" || isOwnPersonalFixedExpense(item));
+  }, [fixedExpenses, currentUserId, members]);
 
   const monthTransactions = useMemo(() => visibleTransactions.filter((item) => isInMonth(item.transaction_date, selectedMonth)), [visibleTransactions, selectedMonth]);
   const filteredTransactions = useMemo(() => {
@@ -1593,7 +1639,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         <div className="role-box">
           <span>내 권한</span>
           <strong>{roleLabel(currentRole)}</strong>
-          <small>{canViewPersonal ? "전체 내용 확인 가능" : canAdmin ? "관리 기능 사용 가능 · 개인 지출 숨김" : canEdit ? "생활 입력 가능 · 개인 지출 숨김" : "조회 전용 · 개인 지출 숨김"}</small>
+          <small>{isOwner ? "그룹 설정 가능 · 본인 개인 내역만 표시" : canEdit ? "공동 입력 가능 · 본인 개인 내역만 표시" : "초대 참여가 필요합니다"}</small>
         </div>
 
         <div className="sidebar-note">
@@ -1720,16 +1766,16 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
               <Card title="고정비" description="보험, 통신비, 구독료처럼 반복되는 지출입니다.">
                 <form className="stack-form" onSubmit={addFixedExpense}>
-                  <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" maxLength={FIELD_LIMITS.fixedTitle} disabled={!canAdmin} />
-                  <div className="form-row"><select value={canViewPersonal ? fixedForm.scope : "shared"} onChange={(event) => setFixedForm({ ...fixedForm, scope: event.target.value as "shared" | "personal" })} disabled={!canAdmin || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select><select value={fixedForm.paid_by_member_id} onChange={(event) => setFixedForm({ ...fixedForm, paid_by_member_id: event.target.value })} disabled={!canAdmin}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
-                  <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canAdmin} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
-                  <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canAdmin}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-                  <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canAdmin} /> 반복 사용</label>
-                  {fixedForm.repeat_enabled && <div className="form-row"><select value={fixedForm.repeat_type} onChange={(event) => setFixedForm({ ...fixedForm, repeat_type: event.target.value })} disabled={!canAdmin}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select><input type="date" value={fixedForm.repeat_until} onChange={(event) => setFixedForm({ ...fixedForm, repeat_until: event.target.value })} disabled={!canAdmin} title="반복 종료일" /></div>}
+                  <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" maxLength={FIELD_LIMITS.fixedTitle} disabled={!canEdit} />
+                  <div className="form-row"><select value={canViewPersonal ? fixedForm.scope : "shared"} onChange={(event) => setFixedForm({ ...fixedForm, scope: event.target.value as "shared" | "personal" })} disabled={!canEdit || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select><select value={fixedForm.paid_by_member_id} onChange={(event) => setFixedForm({ ...fixedForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
+                  <div className="form-row"><input type="date" value={fixedForm.next_payment_date} onChange={(event) => setFixedForm({ ...fixedForm, next_payment_date: event.target.value })} disabled={!canEdit} /><input value={fixedForm.amount} onChange={(event) => setFixedForm({ ...fixedForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
+                  <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canEdit} /> 반복 사용</label>
+                  {fixedForm.repeat_enabled && <div className="form-row"><select value={fixedForm.repeat_type} onChange={(event) => setFixedForm({ ...fixedForm, repeat_type: event.target.value })} disabled={!canEdit}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select><input type="date" value={fixedForm.repeat_until} onChange={(event) => setFixedForm({ ...fixedForm, repeat_until: event.target.value })} disabled={!canEdit} title="반복 종료일" /></div>}
                   {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
-                  <button disabled={!canAdmin}>고정비 저장</button>
+                  <button disabled={!canEdit}>고정비 저장</button>
                 </form>
-                <List compact>{visibleFixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {fixedScopeOf(item) === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{visibleFixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {fixedScopeOf(item) === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canManageFixedExpense(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id)} disabled={!canManageFixedExpense(item)}>삭제</button></div></li>)}</List>
               </Card>
 
               <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
@@ -1795,7 +1841,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
             <section className="grid two">
               <Card title="최근 거래내역" description="최근 5건만 빠르게 확인합니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
@@ -1840,7 +1886,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {filteredTransactions.length === 0 ? (
                     <tr><td colSpan={9}>조건에 맞는 거래내역이 없습니다.</td></tr>
                   ) : filteredTransactions.map((item) => (
-                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canEdit}>삭제</button></td></tr>
+                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></td></tr>
                   ))}
                 </tbody></table></div>
               </Card>
@@ -2189,18 +2235,14 @@ function RoleOptions({ allowOwner }: { allowOwner: boolean }) {
   return (
     <>
       {allowOwner && <option value="owner">소유자</option>}
-      <option value="admin">관리자</option>
-      <option value="member">멤버</option>
-      <option value="viewer">조회전용</option>
+      <option value="partner">파트너</option>
     </>
   );
 }
 
 function roleLabel(role: Role) {
   if (role === "owner") return "소유자";
-  if (role === "admin") return "관리자";
-  if (role === "member") return "멤버";
-  return "조회전용";
+  return "파트너";
 }
 
 function moodLabel(mood: string | null | undefined) {
