@@ -695,13 +695,17 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!transactionForm.title.trim()) return;
     const amount = asNumber(transactionForm.amount);
+    const selectedCategory = categories.find((category) => category.id === transactionForm.category_id);
+    // v20.2: 수입으로 저장했는데 전체 거래내역에서 지출로 표시되는 문제를 막기 위해
+    // 선택한 구분과 카테고리 유형을 함께 확인해서 저장 타입을 확정합니다.
+    const nextType: "income" | "expense" = selectedCategory?.type === "income" || transactionForm.type === "income" ? "income" : "expense";
     const nextScope = canViewPersonal ? transactionForm.scope : "shared";
-    const nextSettlementRequired = transactionForm.type === "expense" && nextScope === "shared" ? transactionForm.settlement_required : false;
+    const nextSettlementRequired = nextType === "expense" && nextScope === "shared" ? transactionForm.settlement_required : false;
     const nextTransaction = {
       group_id: selectedGroupId,
       created_by: currentUserId,
       title: transactionForm.title.trim(),
-      type: transactionForm.type,
+      type: nextType,
       scope: nextScope,
       transaction_date: transactionForm.transaction_date,
       amount,
@@ -1027,6 +1031,41 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     await updateRow("budgets", budget.id, { name, limit_amount: limitAmount }, true);
   };
 
+  const changeTransactionType = async (item: Transaction, nextType: "income" | "expense") => {
+    if (!supabase || !selectedGroupId) return;
+    if (!canManageTransaction(item)) {
+      showNotice({ type: "error", text: transactionScopeOf(item) === "personal" ? "본인 개인 거래만 변경할 수 있습니다." : "거래 변경 권한이 없습니다." });
+      return;
+    }
+    const currentType = transactionTypeOf(item);
+    if (currentType === nextType) {
+      showNotice({ type: "info", text: nextType === "income" ? "이미 수입으로 저장된 거래입니다." : "이미 지출로 저장된 거래입니다." });
+      return;
+    }
+    const nextSettlementRequired = nextType === "expense" && transactionScopeOf(item) === "shared" ? Boolean(item.settlement_required) : false;
+    const confirmText = nextType === "income" ? "이 거래를 수입으로 변경할까요? 계좌 잔액도 다시 계산됩니다." : "이 거래를 지출로 변경할까요? 계좌 잔액도 다시 계산됩니다.";
+    if (!window.confirm(confirmText)) return;
+
+    const reverseError = await reverseTransactionFromAccount(item);
+    if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
+
+    const patch = {
+      type: nextType,
+      settlement_required: nextSettlementRequired,
+      split_method: nextSettlementRequired ? "equal" : "none"
+    };
+    const { error } = await supabase.from("transactions").update(patch).eq("id", item.id);
+    if (error) {
+      await applyTransactionToAccount(item);
+      return showNotice({ type: "error", text: error.message });
+    }
+
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount: item.amount, account_id: item.account_id });
+    if (balanceError) return showNotice({ type: "error", text: `거래 구분은 변경됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: nextType === "income" ? "수입으로 변경했습니다." : "지출로 변경했습니다." });
+  };
+
   const editTransaction = async (item: Transaction) => {
     if (!supabase || !selectedGroupId) return;
     if (!canManageTransaction(item)) {
@@ -1038,7 +1077,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const typeInput = window.prompt("거래 구분을 수정하세요. 수입 또는 지출", currentType === "income" ? "수입" : "지출");
     if (typeInput === null) return;
     const typeText = typeInput.trim().toLowerCase();
-    const nextType: Transaction["type"] = typeText.includes("수") || typeText.includes("income") || typeText.startsWith("i") ? "income" : "expense";
+    let nextType: Transaction["type"];
+    if (typeText === "수입" || typeText === "income" || typeText === "i" || typeText === "1") nextType = "income";
+    else if (typeText === "지출" || typeText === "expense" || typeText === "e" || typeText === "2") nextType = "expense";
+    else return showNotice({ type: "error", text: "거래 구분은 수입 또는 지출만 입력할 수 있습니다." });
 
     const currentScope = transactionScopeOf(item);
     const scopeInput = window.prompt("거래 범위를 수정하세요. 공동 또는 개인", currentScope === "personal" ? "개인" : "공동");
@@ -1260,9 +1302,20 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     await fetchGroupData(selectedGroupId);
   };
 
+  const normalizedTransactions = useMemo(() => {
+    const categoryTypeMap = new Map(categories.map((category) => [category.id, category.type]));
+    return transactions.map((item) => {
+      const categoryType = item.category_id ? categoryTypeMap.get(item.category_id) : null;
+      if (categoryType === "income" && transactionTypeOf(item) !== "income") {
+        return { ...item, type: "income" as Transaction["type"], settlement_required: false, split_method: "none" };
+      }
+      return item;
+    });
+  }, [transactions, categories]);
+
   const visibleTransactions = useMemo(() => {
-    return transactions.filter((item) => transactionScopeOf(item) !== "personal" || isOwnPersonalTransaction(item));
-  }, [transactions, currentUserId, members]);
+    return normalizedTransactions.filter((item) => transactionScopeOf(item) !== "personal" || isOwnPersonalTransaction(item));
+  }, [normalizedTransactions, currentUserId, members]);
 
   const visibleFixedExpenses = useMemo(() => {
     return fixedExpenses.filter((item) => fixedScopeOf(item) !== "personal" || isOwnPersonalFixedExpense(item));
@@ -1750,12 +1803,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <form className="stack-form" onSubmit={addTransaction}>
                   <input value={transactionForm.title} onChange={(event) => setTransactionForm({ ...transactionForm, title: event.target.value })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} disabled={!canEdit} />
                   <div className="form-row">
-                    <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"] })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
+                    <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: event.target.value === "expense" ? transactionForm.settlement_required : false })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
                     <select value={canViewPersonal ? transactionForm.scope : "shared"} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select>
                   </div>
                   <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
                   <select value={transactionForm.account_id} onChange={(event) => setTransactionForm({ ...transactionForm, account_id: event.target.value })} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
-                  <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === transactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <textarea rows={3} value={transactionForm.memo} onChange={(event) => setTransactionForm({ ...transactionForm, memo: event.target.value })} placeholder="세부내용: 사용처, 메모, 영수증 정보 등을 적어두세요." maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit} />
                   <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다.</p>
@@ -1841,7 +1894,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
             <section className="grid two">
               <Card title="최근 거래내역" description="최근 5건만 빠르게 확인합니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button>{transactionTypeOf(item) === "expense" ? <button className="text-button" onClick={() => changeTransactionType(item, "income")} disabled={!canManageTransaction(item)}>수입전환</button> : <button className="text-button" onClick={() => changeTransactionType(item, "expense")} disabled={!canManageTransaction(item)}>지출전환</button>}<button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>)}</tbody></table></div>
               </Card>
               <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
                 <form className="stack-form" onSubmit={addGoal}>
@@ -1886,7 +1939,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {filteredTransactions.length === 0 ? (
                     <tr><td colSpan={9}>조건에 맞는 거래내역이 없습니다.</td></tr>
                   ) : filteredTransactions.map((item) => (
-                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></td></tr>
+                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button>{transactionTypeOf(item) === "expense" ? <button className="text-button" onClick={() => changeTransactionType(item, "income")} disabled={!canManageTransaction(item)}>수입전환</button> : <button className="text-button" onClick={() => changeTransactionType(item, "expense")} disabled={!canManageTransaction(item)}>지출전환</button>}<button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>
                   ))}
                 </tbody></table></div>
               </Card>
