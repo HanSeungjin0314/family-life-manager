@@ -1,0 +1,2 @@
+-- Together Life v19
+-- DB 구조 변경 없음. Supabase SQL 실행 필요 없음.
