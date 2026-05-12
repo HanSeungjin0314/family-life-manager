@@ -68,9 +68,9 @@ type SettlementRecord = {
   completed_at: string | null;
 };
 
-type Vehicle = { id: string; group_id: string; name: string; plate_number: string | null; current_km: number; memo: string | null; created_at?: string };
+type Vehicle = { id: string; group_id: string; name: string; plate_number: string | null; current_km: number; insurance_due_date?: string | null; inspection_due_date?: string | null; tax_due_date?: string | null; memo: string | null; created_at?: string };
 type VehicleMaintenanceItem = { id: string; group_id: string; vehicle_id: string; item_name: string; interval_km: number; last_service_km: number; last_service_date: string | null; memo: string | null; created_at?: string };
-type PlaceRecord = { id: string; group_id: string; name: string; place_type: string; visit_date: string | null; address: string | null; google_maps_url: string | null; rating: number | null; memo: string | null; created_at?: string };
+type PlaceRecord = { id: string; group_id: string; name: string; place_type: string; visit_date: string | null; address: string | null; google_maps_url: string | null; rating: number | null; price_range?: string | null; parking_available?: boolean | null; revisit_intent?: string | null; tags?: string | null; memo: string | null; created_at?: string };
 
 
 const FIELD_LIMITS = {
@@ -104,6 +104,7 @@ const FIELD_LIMITS = {
   placeAddress: 150,
   placeUrl: 300,
   placeMemo: 300,
+  placeTags: 120,
   memo: 300,
   money: 16
 };
@@ -277,6 +278,20 @@ const MAX_DIARY_PHOTO_SIZE_MB = 5;
 const MAX_DIARY_PHOTO_SIZE = MAX_DIARY_PHOTO_SIZE_MB * 1024 * 1024;
 const googleMapsSearchUrl = (query: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 const mapsUrlForPlace = (place: Pick<PlaceRecord, "name" | "address" | "google_maps_url">) => place.google_maps_url || googleMapsSearchUrl([place.name, place.address].filter(Boolean).join(" "));
+const dDayLabel = (dateValue?: string | null) => {
+  if (!dateValue) return "미등록";
+  const diff = daysBetween(today(), dateValue);
+  if (diff < 0) return `${Math.abs(diff)}일 지남`;
+  if (diff === 0) return "오늘";
+  return `D-${diff}`;
+};
+const vehicleDueTone = (dateValue?: string | null) => {
+  if (!dateValue) return "";
+  const diff = daysBetween(today(), dateValue);
+  if (diff < 0) return "danger";
+  if (diff <= 30) return "warning";
+  return "safe";
+};
 
 type BackupPayload = {
   app: "Together Life";
@@ -445,7 +460,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [vehicleMaintenanceItems, setVehicleMaintenanceItems] = useState<VehicleMaintenanceItem[]>([]);
   const [placeRecords, setPlaceRecords] = useState<PlaceRecord[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(thisMonth());
-  const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "car" | "places" | "search" | "settings">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "finance" | "settlement" | "calendar" | "diary" | "album" | "life" | "car" | "places" | "search" | "settings">("home");
   const [searchQuery, setSearchQuery] = useState("");
   const [transactionHistoryPeriod, setTransactionHistoryPeriod] = useState<"month" | "all">("month");
   const [transactionHistoryType, setTransactionHistoryType] = useState<"all" | "income" | "expense">("all");
@@ -487,9 +502,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [diaryForm, setDiaryForm] = useState({ title: "", diary_date: today(), mood: "normal", content: "", visibility: "group", author_member_id: "" });
   const [diaryPhotoFiles, setDiaryPhotoFiles] = useState<File[]>([]);
   const [photoInputKey, setPhotoInputKey] = useState(0);
-  const [vehicleForm, setVehicleForm] = useState({ name: "", plate_number: "", current_km: "0", memo: "" });
+  const [vehicleForm, setVehicleForm] = useState({ name: "", plate_number: "", current_km: "0", insurance_due_date: "", inspection_due_date: "", tax_due_date: "", memo: "" });
   const [maintenanceForm, setMaintenanceForm] = useState({ vehicle_id: "", item_name: "엔진오일", interval_km: "10000", last_service_km: "0", last_service_date: today(), memo: "" });
-  const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", memo: "" });
+  const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", price_range: "", parking_available: false, revisit_intent: "", tags: "", memo: "" });
 
   const [transactionEdit, setTransactionEdit] = useState<null | { item: Transaction; type: "income" | "expense"; scope: "shared" | "personal"; title: string; amount: string; transaction_date: string; account_id: string; category_id: string; paid_by_member_id: string; settlement_required: boolean; memo: string }>(null);
   const [fixedEdit, setFixedEdit] = useState<null | { item: FixedExpense; title: string; scope: "shared" | "personal"; amount: string; next_payment_date: string; category_id: string; account_id: string; paid_by_member_id: string; repeat_enabled: boolean; repeat_type: string; repeat_until: string; memo: string }>(null);
@@ -818,10 +833,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
       name: vehicleForm.name.trim(),
       plate_number: vehicleForm.plate_number.trim() || null,
       current_km: asNumber(vehicleForm.current_km),
+      insurance_due_date: vehicleForm.insurance_due_date || null,
+      inspection_due_date: vehicleForm.inspection_due_date || null,
+      tax_due_date: vehicleForm.tax_due_date || null,
       memo: vehicleForm.memo.trim() || null
     });
     if (error) return showNotice({ type: "error", text: error.message });
-    setVehicleForm({ name: "", plate_number: "", current_km: "0", memo: "" });
+    setVehicleForm({ name: "", plate_number: "", current_km: "0", insurance_due_date: "", inspection_due_date: "", tax_due_date: "", memo: "" });
     await fetchGroupData(selectedGroupId);
   };
 
@@ -843,12 +861,21 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (plate === null) return;
     const currentKm = window.prompt("현재 KM를 수정하세요.", String(vehicle.current_km ?? 0));
     if (currentKm === null) return;
+    const insuranceDueDate = window.prompt("보험 만료일을 수정하세요. 예: 2026-12-31 / 비우면 삭제", vehicle.insurance_due_date ?? "");
+    if (insuranceDueDate === null) return;
+    const inspectionDueDate = window.prompt("자동차 검사일을 수정하세요. 예: 2026-12-31 / 비우면 삭제", vehicle.inspection_due_date ?? "");
+    if (inspectionDueDate === null) return;
+    const taxDueDate = window.prompt("자동차세 납부일을 수정하세요. 예: 2026-12-31 / 비우면 삭제", vehicle.tax_due_date ?? "");
+    if (taxDueDate === null) return;
     const memo = window.prompt("차량 메모를 수정하세요. 비우면 삭제됩니다.", vehicle.memo ?? "");
     if (memo === null) return;
     const { error } = await supabase.from("vehicles").update({
       name: limitText(name.trim(), FIELD_LIMITS.vehicleName),
       plate_number: plate.trim() ? limitText(plate.trim(), FIELD_LIMITS.vehiclePlate) : null,
       current_km: asNumber(currentKm),
+      insurance_due_date: insuranceDueDate.trim() || null,
+      inspection_due_date: inspectionDueDate.trim() || null,
+      tax_due_date: taxDueDate.trim() || null,
       memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.memo) : null
     }).eq("id", vehicle.id);
     if (error) return showNotice({ type: "error", text: error.message });
@@ -944,10 +971,14 @@ function FamilyLifeApp({ session }: { session: Session }) {
       address: placeForm.address.trim() || null,
       google_maps_url: placeForm.google_maps_url.trim() || null,
       rating: Math.max(0, Math.min(5, asNumber(placeForm.rating))),
+      price_range: placeForm.price_range.trim() || null,
+      parking_available: placeForm.parking_available,
+      revisit_intent: placeForm.revisit_intent.trim() || null,
+      tags: placeForm.tags.trim() || null,
       memo: placeForm.memo.trim() || null
     });
     if (error) return showNotice({ type: "error", text: error.message });
-    setPlaceForm({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", memo: "" });
+    setPlaceForm({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", price_range: "", parking_available: false, revisit_intent: "", tags: "", memo: "" });
     await fetchGroupData(selectedGroupId);
   };
 
@@ -968,6 +999,14 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (url === null) return;
     const rating = window.prompt("평점을 수정하세요. 0~5 사이 숫자입니다.", String(place.rating ?? 0));
     if (rating === null) return;
+    const priceRange = window.prompt("가격대를 수정하세요. 예: 1만원대, 2~3만원대 / 비우면 삭제", place.price_range ?? "");
+    if (priceRange === null) return;
+    const parkingInput = window.prompt("주차 가능 여부를 입력하세요. 가능/불가/비움", place.parking_available ? "가능" : "");
+    if (parkingInput === null) return;
+    const revisitIntent = window.prompt("재방문 의사를 수정하세요. 예: 재방문, 보류, 비추천", place.revisit_intent ?? "");
+    if (revisitIntent === null) return;
+    const tags = window.prompt("태그를 수정하세요. 예: 데이트, 조용함, 주차좋음", place.tags ?? "");
+    if (tags === null) return;
     const memo = window.prompt("장소 메모를 수정하세요. 비우면 삭제됩니다.", place.memo ?? "");
     if (memo === null) return;
     const { error } = await supabase.from("place_records").update({
@@ -977,6 +1016,10 @@ function FamilyLifeApp({ session }: { session: Session }) {
       address: address.trim() ? limitText(address.trim(), FIELD_LIMITS.placeAddress) : null,
       google_maps_url: url.trim() ? limitText(url.trim(), FIELD_LIMITS.placeUrl) : null,
       rating: Math.max(0, Math.min(5, asNumber(rating))),
+      price_range: priceRange.trim() || null,
+      parking_available: parkingInput.trim() === "가능" || parkingInput.trim().toLowerCase() === "yes" || parkingInput.trim().toLowerCase() === "y",
+      revisit_intent: revisitIntent.trim() || null,
+      tags: tags.trim() || null,
       memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.placeMemo) : null
     }).eq("id", place.id);
     if (error) return showNotice({ type: "error", text: error.message });
@@ -1995,6 +2038,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
         <div className="tab-bar">
           <button type="button" className={`tab-button ${activeTab === "home" ? "active" : ""}`} onClick={() => setActiveTab("home")}>홈</button>
           <button type="button" className={`tab-button ${activeTab === "finance" ? "active" : ""}`} onClick={() => setActiveTab("finance")}>가계부</button>
+          <button type="button" className={`tab-button ${activeTab === "settlement" ? "active" : ""}`} onClick={() => setActiveTab("settlement")}>정산</button>
           <button type="button" className={`tab-button ${activeTab === "calendar" ? "active" : ""}`} onClick={() => setActiveTab("calendar")}>달력 · 기념일</button>
           <button type="button" className={`tab-button ${activeTab === "diary" ? "active" : ""}`} onClick={() => setActiveTab("diary")}>다이어리</button>
           <button type="button" className={`tab-button ${activeTab === "album" ? "active" : ""}`} onClick={() => setActiveTab("album")}>사진앨범</button>
@@ -2230,6 +2274,38 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
           </>
         )}
 
+        {activeTab === "settlement" && (
+          <section className="grid two">
+            <Card title="정산 관리" description="가계부에서 분리한 정산 전용 화면입니다.">
+              <div className="settlement-list">
+                {settlementBalances.map(({ member, balance }) => <div className="settlement-row" key={member.id}><span>{member.display_name}</span><strong className={balance > 0 ? "positive" : balance < 0 ? "negative" : ""}>{balance > 0 ? `받을 금액 ${currency(balance)}` : balance < 0 ? `보낼 금액 ${currency(Math.abs(balance))}` : "정산 완료"}</strong></div>)}
+              </div>
+              <button className="secondary full gap-top" onClick={createSettlementSuggestions} disabled={!canEdit}>이번 달 정산 기록 생성</button>
+              <List>
+                {monthSettlementRecords.slice(0, 30).map((record) => {
+                  const paidAmount = Number(record.paid_amount ?? (record.status === "completed" ? record.amount : 0));
+                  const remainingAmount = Math.max(0, Number(record.amount) - paidAmount);
+                  return (
+                    <li key={record.id}>
+                      <span>{memberName(record.from_member_id)} → {memberName(record.to_member_id)} · 총 {currency(record.amount)} · 받은 {currency(paidAmount)} · 남은 {currency(remainingAmount)} · {remainingAmount <= 0 ? "완료" : "대기"}</span>
+                      <div className="inline-actions">
+                        {remainingAmount > 0 && <button className="text-button" onClick={() => recordSettlementPayment(record)} disabled={!canEdit}>일부수령</button>}
+                        {remainingAmount > 0 && <button className="text-button" onClick={() => updateSettlementStatus(record.id, "completed")} disabled={!canEdit}>전액완료</button>}
+                        <button className="text-button" onClick={() => editSettlementRecord(record)} disabled={!canEdit}>수정</button>
+                        <button className="text-button danger-text" onClick={() => removeRow("settlement_records", record.id)} disabled={!canEdit}>삭제</button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </List>
+            </Card>
+            <Card title="정산 기준" description="공동 지출만 정산 계산에 포함합니다.">
+              <List compact>{settlementSuggestions.length === 0 && <li><span>현재 생성할 정산 제안이 없습니다.</span></li>}{settlementSuggestions.map((row) => <li key={`${row.from.id}-${row.to.id}-${row.amount}`}><span>{row.from.display_name} → {row.to.display_name} · {currency(row.amount)}</span></li>)}</List>
+            </Card>
+          </section>
+        )}
+
+
         {activeTab === "calendar" && (
           <>
             <section className="grid two">
@@ -2379,6 +2455,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <form className="stack-form" onSubmit={addVehicle}>
                   <input value={vehicleForm.name} onChange={(event) => setVehicleForm({ ...vehicleForm, name: limitText(event.target.value, FIELD_LIMITS.vehicleName) })} placeholder="차량명 예: 소나타" maxLength={FIELD_LIMITS.vehicleName} disabled={!canEdit} />
                   <div className="form-row"><input value={vehicleForm.plate_number} onChange={(event) => setVehicleForm({ ...vehicleForm, plate_number: limitText(event.target.value, FIELD_LIMITS.vehiclePlate) })} placeholder="차량번호" maxLength={FIELD_LIMITS.vehiclePlate} disabled={!canEdit} /><input value={vehicleForm.current_km} onChange={(event) => setVehicleForm({ ...vehicleForm, current_km: formatMoneyInput(event.target.value) })} placeholder="현재 KM" disabled={!canEdit} /></div>
+                  <div className="form-row"><label>보험 만료일<input type="date" value={vehicleForm.insurance_due_date} onChange={(event) => setVehicleForm({ ...vehicleForm, insurance_due_date: event.target.value })} disabled={!canEdit} /></label><label>검사 예정일<input type="date" value={vehicleForm.inspection_due_date} onChange={(event) => setVehicleForm({ ...vehicleForm, inspection_due_date: event.target.value })} disabled={!canEdit} /></label></div>
+                  <label>자동차세 납부일<input type="date" value={vehicleForm.tax_due_date} onChange={(event) => setVehicleForm({ ...vehicleForm, tax_due_date: event.target.value })} disabled={!canEdit} /></label>
                   <textarea value={vehicleForm.memo} onChange={(event) => setVehicleForm({ ...vehicleForm, memo: limitText(event.target.value, FIELD_LIMITS.memo) })} placeholder="차량 메모" maxLength={FIELD_LIMITS.memo} disabled={!canEdit} />
                   <button disabled={!canEdit}>차량 저장</button>
                 </form>
@@ -2405,6 +2483,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 return (
                   <Card key={vehicle.id} title={`${vehicle.name}${vehicle.plate_number ? ` · ${vehicle.plate_number}` : ""}`} description={`현재 ${currency(vehicle.current_km).replace("원", "km")}`}>
                     <div className="between"><span className="muted small">{vehicle.memo || "차량 메모 없음"}</span><div className="inline-actions"><button className="text-button" onClick={() => editVehicle(vehicle)} disabled={!canEdit}>수정</button><button className="text-button" onClick={() => updateVehicleKm(vehicle)} disabled={!canEdit}>KM수정</button><button className="text-button danger-text" onClick={() => removeRow("vehicles", vehicle.id)} disabled={!canEdit}>삭제</button></div></div>
+                    <div className="chip-list"><span className={`chip ${vehicleDueTone(vehicle.insurance_due_date)}`}>보험 {dDayLabel(vehicle.insurance_due_date)}</span><span className={`chip ${vehicleDueTone(vehicle.inspection_due_date)}`}>검사 {dDayLabel(vehicle.inspection_due_date)}</span><span className={`chip ${vehicleDueTone(vehicle.tax_due_date)}`}>자동차세 {dDayLabel(vehicle.tax_due_date)}</span></div>
                     <div className="maintenance-list">
                       {items.length === 0 && <p className="muted small">등록된 관리품목이 없습니다.</p>}
                       {items.map((item) => {
@@ -2437,7 +2516,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <div className="form-row"><select value={placeForm.place_type} onChange={(event) => setPlaceForm({ ...placeForm, place_type: event.target.value })} disabled={!canEdit}><option value="restaurant">맛집</option><option value="cafe">카페</option><option value="visited">가본곳</option><option value="wishlist">가고싶은곳</option></select><input type="date" value={placeForm.visit_date} onChange={(event) => setPlaceForm({ ...placeForm, visit_date: event.target.value })} disabled={!canEdit} /></div>
                 <input value={placeForm.address} onChange={(event) => setPlaceForm({ ...placeForm, address: limitText(event.target.value, FIELD_LIMITS.placeAddress) })} placeholder="주소 또는 지역" maxLength={FIELD_LIMITS.placeAddress} disabled={!canEdit} />
                 <input value={placeForm.google_maps_url} onChange={(event) => setPlaceForm({ ...placeForm, google_maps_url: limitText(event.target.value, FIELD_LIMITS.placeUrl) })} placeholder="Google 지도 공유 링크 선택 입력" maxLength={FIELD_LIMITS.placeUrl} disabled={!canEdit} />
-                <div className="form-row"><input value={placeForm.rating} onChange={(event) => setPlaceForm({ ...placeForm, rating: event.target.value.replace(/[^0-5]/g, "").slice(0, 1) })} placeholder="평점 0~5" disabled={!canEdit} /><textarea value={placeForm.memo} onChange={(event) => setPlaceForm({ ...placeForm, memo: limitText(event.target.value, FIELD_LIMITS.placeMemo) })} placeholder="메뉴, 분위기, 주차, 재방문의사" maxLength={FIELD_LIMITS.placeMemo} disabled={!canEdit} /></div>
+                <div className="form-row"><input value={placeForm.rating} onChange={(event) => setPlaceForm({ ...placeForm, rating: event.target.value.replace(/[^0-5]/g, "").slice(0, 1) })} placeholder="평점 0~5" disabled={!canEdit} /><input value={placeForm.price_range} onChange={(event) => setPlaceForm({ ...placeForm, price_range: limitText(event.target.value, 30) })} placeholder="가격대 예: 1만원대" disabled={!canEdit} /></div>
+                <div className="form-row"><select value={placeForm.parking_available ? "yes" : "no"} onChange={(event) => setPlaceForm({ ...placeForm, parking_available: event.target.value === "yes" })} disabled={!canEdit}><option value="no">주차 정보 없음/불가</option><option value="yes">주차 가능</option></select><input value={placeForm.revisit_intent} onChange={(event) => setPlaceForm({ ...placeForm, revisit_intent: limitText(event.target.value, 30) })} placeholder="재방문 의사" disabled={!canEdit} /></div>
+                <input value={placeForm.tags} onChange={(event) => setPlaceForm({ ...placeForm, tags: limitText(event.target.value, FIELD_LIMITS.placeTags) })} placeholder="태그 예: 데이트, 조용함, 주차좋음" maxLength={FIELD_LIMITS.placeTags} disabled={!canEdit} />
+                <textarea value={placeForm.memo} onChange={(event) => setPlaceForm({ ...placeForm, memo: limitText(event.target.value, FIELD_LIMITS.placeMemo) })} placeholder="메뉴, 분위기, 주차, 재방문의사" maxLength={FIELD_LIMITS.placeMemo} disabled={!canEdit} />
                 <button disabled={!canEdit}>장소 저장</button>
               </form>
             </Card>
@@ -2449,6 +2531,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <article className="place-item" key={place.id}>
                     <div className="between"><strong>{place.name}</strong><span>{place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳"} · ★{place.rating ?? 0}</span></div>
                     <p className="muted small">{place.visit_date || "날짜 없음"} · {place.address || "주소 없음"}</p>
+                    <p className="muted small">가격대 {place.price_range || "미기록"} · {place.parking_available ? "주차 가능" : "주차 미확인"} · 재방문 {place.revisit_intent || "미기록"}</p>
+                    {place.tags && <div className="chip-list">{place.tags.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => <span className="chip" key={tag}>{tag}</span>)}</div>}
                     {place.memo && <p className="line-item">{place.memo}</p>}
                     <div className="inline-actions"><a className="map-link" href={mapsUrlForPlace(place)} target="_blank" rel="noreferrer">Google 지도 열기</a><button className="text-button" onClick={() => editPlaceRecord(place)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("place_records", place.id)} disabled={!canEdit}>삭제</button></div>
                   </article>
