@@ -103,18 +103,20 @@ const currency = (value: number | string | null | undefined) => `${Number(value 
 const asNumber = (value: string) => Number(String(value).replaceAll(",", "")) || 0;
 const moneyNumber = (value: unknown) => Number(String(value ?? 0).replaceAll(",", "")) || 0;
 const transactionTypeOf = (item: { type?: unknown }) => {
-  const type = String(item.type ?? "").toLowerCase();
+  const type = String(item.type ?? "").trim().toLowerCase();
   if (type.includes("income") || type.includes("수입")) return "income";
-  if (type.includes("expense") || type.includes("지출")) return "expense";
-  if (type.includes("transfer") || type.includes("이체")) return "transfer";
-  return type || "expense";
+  // v19.4: 예전 버전에서 저장된 transfer/이체 거래는 더 이상 별도 유형으로 쓰지 않고 지출로 통합합니다.
+  // 새 입력 선택지에서는 이체를 제거했고, 기존 이체 데이터도 요약/필터/표시에서 지출로 계산합니다.
+  if (type.includes("expense") || type.includes("지출") || type.includes("transfer") || type.includes("이체")) return "expense";
+  return "expense";
 };
+const transactionIsExpense = (item: { type?: unknown }) => transactionTypeOf(item) === "expense";
 const transactionScopeOf = (item: { scope?: unknown; settlement_required?: unknown }) => {
   const raw = String(item.scope ?? "").trim().toLowerCase();
-  if (raw.includes("personal") || raw.includes("private") || raw.includes("개인")) return "personal";
+  // 공동 지출 정산 대상이면 scope 값이 잘못 저장되어도 공동 지출로 우선 계산합니다.
+  if (item.settlement_required === true || String(item.settlement_required ?? "").toLowerCase() === "true") return "shared";
   if (raw.includes("shared") || raw.includes("joint") || raw.includes("common") || raw.includes("공동")) return "shared";
-  // 예전 데이터 호환: 정산 대상이면 공동 지출로 계산합니다.
-  if (item.settlement_required === true) return "shared";
+  if (raw.includes("personal") || raw.includes("private") || raw.includes("개인")) return "personal";
   return "shared";
 };
 const fixedScopeOf = (item: { scope?: unknown; settlement_required?: unknown }) => {
@@ -420,7 +422,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [activeTab, setActiveTab] = useState<"home" | "finance" | "calendar" | "diary" | "album" | "life" | "search" | "settings">("home");
   const [searchQuery, setSearchQuery] = useState("");
   const [transactionHistoryPeriod, setTransactionHistoryPeriod] = useState<"month" | "all">("month");
-  const [transactionHistoryType, setTransactionHistoryType] = useState<"all" | "income" | "expense" | "transfer">("all");
+  const [transactionHistoryType, setTransactionHistoryType] = useState<"all" | "income" | "expense">("all");
   const [transactionHistoryScope, setTransactionHistoryScope] = useState<"all" | "shared" | "personal">("all");
   const [transactionHistoryCategory, setTransactionHistoryCategory] = useState("");
   const [transactionHistoryQuery, setTransactionHistoryQuery] = useState("");
@@ -687,19 +689,21 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (!supabase || !selectedGroupId || !requireEdit()) return;
     if (!transactionForm.title.trim()) return;
     const amount = asNumber(transactionForm.amount);
+    const nextScope = canViewPersonal ? transactionForm.scope : "shared";
+    const nextSettlementRequired = transactionForm.type === "expense" && nextScope === "shared" ? transactionForm.settlement_required : false;
     const nextTransaction = {
       group_id: selectedGroupId,
       created_by: currentUserId,
       title: transactionForm.title.trim(),
       type: transactionForm.type,
-      scope: canViewPersonal ? transactionForm.scope : "shared",
+      scope: nextScope,
       transaction_date: transactionForm.transaction_date,
       amount,
       category_id: transactionForm.category_id || null,
       account_id: transactionForm.account_id || null,
       paid_by_member_id: transactionForm.paid_by_member_id || null,
-      settlement_required: transactionForm.type === "expense" && (canViewPersonal ? transactionForm.scope : "shared") === "shared" ? transactionForm.settlement_required : false,
-      split_method: transactionForm.settlement_required ? "equal" : "none",
+      settlement_required: nextSettlementRequired,
+      split_method: nextSettlementRequired ? "equal" : "none",
       memo: transactionForm.memo || null
     };
     const { error } = await supabase.from("transactions").insert(nextTransaction);
@@ -1360,7 +1364,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
   const summary = useMemo(() => {
     const income = monthTransactions.filter((item) => transactionTypeOf(item) === "income").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
-    const expenseTransactions = monthTransactions.filter((item) => transactionTypeOf(item) === "expense");
+    const expenseTransactions = monthTransactions.filter((item) => transactionIsExpense(item));
     const sharedVariableExpense = expenseTransactions.filter((item) => transactionScopeOf(item) === "shared").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
     const personalVariableExpense = expenseTransactions.filter((item) => transactionScopeOf(item) === "personal").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
     const variableExpense = sharedVariableExpense + personalVariableExpense;
@@ -1369,16 +1373,17 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const personalFixedExpense = monthFixedExpenses.filter((item) => fixedScopeOf(item) === "personal").reduce((sum, item) => sum + moneyNumber(item.amount) * fixedOccurrenceCountInMonth(item, selectedMonth), 0);
     const sharedExpense = sharedVariableExpense + sharedFixedExpense;
     const personalExpense = personalVariableExpense + personalFixedExpense;
-    const totalExpense = sharedExpense + personalExpense;
-    return { income, variableExpense, fixedExpense, totalExpense, balance: income - totalExpense, sharedExpense, personalExpense, sharedVariableExpense, personalVariableExpense, sharedFixedExpense, personalFixedExpense };
-  }, [monthTransactions, monthFixedExpenses, selectedMonth]);
+    const totalExpense = variableExpense + fixedExpense;
+    const balance = accounts.reduce((sum, account) => sum + moneyNumber(account.balance), 0);
+    return { income, variableExpense, fixedExpense, totalExpense, balance, sharedExpense, personalExpense, sharedVariableExpense, personalVariableExpense, sharedFixedExpense, personalFixedExpense };
+  }, [monthTransactions, monthFixedExpenses, selectedMonth, accounts]);
 
   const settlementBalances = useMemo(() => {
     const balances = new Map<string, number>();
     members.forEach((member) => balances.set(member.id, 0));
     const activeMembers = members;
     monthTransactions
-      .filter((item) => transactionTypeOf(item) === "expense" && transactionScopeOf(item) === "shared" && item.settlement_required && item.paid_by_member_id)
+      .filter((item) => transactionIsExpense(item) && transactionScopeOf(item) === "shared" && item.settlement_required && item.paid_by_member_id)
       .forEach((item) => {
         const amount = moneyNumber(item.amount);
         const share = activeMembers.length > 0 ? amount / activeMembers.length : 0;
@@ -1528,11 +1533,11 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const categoryStats = useMemo(() => {
-    const expenseTotal = monthTransactions.filter((item) => transactionTypeOf(item) === "expense").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+    const expenseTotal = monthTransactions.filter((item) => transactionIsExpense(item)).reduce((sum, item) => sum + moneyNumber(item.amount), 0);
     return categories
       .filter((category) => category.type === "expense")
       .map((category) => {
-        const total = monthTransactions.filter((item) => transactionTypeOf(item) === "expense" && item.category_id === category.id).reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+        const total = monthTransactions.filter((item) => transactionIsExpense(item) && item.category_id === category.id).reduce((sum, item) => sum + moneyNumber(item.amount), 0);
         return { category, total, percent: expenseTotal > 0 ? Math.round((total / expenseTotal) * 100) : 0 };
       })
       .filter((item) => item.total > 0)
@@ -1547,7 +1552,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return date.toISOString().slice(0, 7);
     });
     const rows = months.map((month) => {
-      const total = visibleTransactions.filter((item) => isInMonth(item.transaction_date, month) && transactionTypeOf(item) === "expense").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const total = visibleTransactions.filter((item) => isInMonth(item.transaction_date, month) && transactionIsExpense(item)).reduce((sum, item) => sum + moneyNumber(item.amount), 0);
       return { month, total };
     });
     const max = Math.max(...rows.map((row) => row.total), 1);
@@ -1695,11 +1700,11 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
             </section>
 
             <section className="grid three">
-              <Card title="공동 가계부" description="수입, 지출, 이체를 등록합니다.">
+              <Card title="공동 가계부" description="수입과 지출을 등록합니다.">
                 <form className="stack-form" onSubmit={addTransaction}>
                   <input value={transactionForm.title} onChange={(event) => setTransactionForm({ ...transactionForm, title: event.target.value })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} disabled={!canEdit} />
                   <div className="form-row">
-                    <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"] })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option><option value="transfer">이체</option></select>
+                    <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"] })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
                     <select value={canViewPersonal ? transactionForm.scope : "shared"} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select>
                   </div>
                   <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
@@ -1707,7 +1712,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <textarea rows={3} value={transactionForm.memo} onChange={(event) => setTransactionForm({ ...transactionForm, memo: event.target.value })} placeholder="세부내용: 사용처, 메모, 영수증 정보 등을 적어두세요." maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit} />
                   <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
-                  <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다. 이체는 계좌 간 이동 구조가 추가될 때까지 잔액 자동 반영에서 제외됩니다.</p>
+                  <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다.</p>
                   <label className="check-line"><input type="checkbox" checked={transactionForm.settlement_required} onChange={(event) => setTransactionForm({ ...transactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>
                   <button disabled={!canEdit}>거래 저장</button>
                 </form>
@@ -1814,11 +1819,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     <option value="month">기준 월만 보기</option>
                     <option value="all">전체 기간 보기</option>
                   </select>
-                  <select value={transactionHistoryType} onChange={(event) => setTransactionHistoryType(event.target.value as "all" | "income" | "expense" | "transfer")}>
+                  <select value={transactionHistoryType} onChange={(event) => setTransactionHistoryType(event.target.value as "all" | "income" | "expense")}>
                     <option value="all">전체 유형</option>
                     <option value="income">수입</option>
                     <option value="expense">지출</option>
-                    <option value="transfer">이체</option>
                   </select>
                   <select value={transactionHistoryScope} onChange={(event) => setTransactionHistoryScope(event.target.value as "all" | "shared" | "personal")}>
                     <option value="all">{canViewPersonal ? "공동/개인 전체" : "공동만"}</option>
