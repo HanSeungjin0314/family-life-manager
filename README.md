@@ -1,4 +1,4 @@
-# Together Life v21.1
+# Together Life v21.2
 
 부부가 함께 쓰는 생활 관리 앱입니다.
 

@@ -108,6 +108,8 @@ const FIELD_LIMITS = {
   money: 16
 };
 const limitText = (value: string, max: number) => String(value).slice(0, max);
+const TRASH_TABLES = ["transactions", "fixed_expenses", "calendar_events", "anniversary_events", "diary_entries", "shopping_items", "tasks", "goals", "vehicles", "vehicle_maintenance_items", "place_records", "budgets"] as const;
+const trashTableLabels: Record<string, string> = { transactions: "거래", fixed_expenses: "고정비", calendar_events: "일정", anniversary_events: "기념일", diary_entries: "다이어리", shopping_items: "장보기", tasks: "할 일", goals: "목표", vehicles: "차량", vehicle_maintenance_items: "차량 관리품목", place_records: "장소", budgets: "예산" };
 
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => today().slice(0, 7);
@@ -126,10 +128,10 @@ const transactionTypeOf = (item: { type?: unknown }) => {
 const transactionIsExpense = (item: { type?: unknown }) => transactionTypeOf(item) === "expense";
 const transactionScopeOf = (item: { scope?: unknown; settlement_required?: unknown }) => {
   const raw = String(item.scope ?? "").trim().toLowerCase();
-  // 공동 지출 정산 대상이면 scope 값이 잘못 저장되어도 공동 지출로 우선 계산합니다.
-  if (item.settlement_required === true || String(item.settlement_required ?? "").toLowerCase() === "true") return "shared";
-  if (raw.includes("shared") || raw.includes("joint") || raw.includes("common") || raw.includes("공동")) return "shared";
-  if (raw.includes("personal") || raw.includes("private") || raw.includes("개인")) return "personal";
+  // v21.2: 계산 기준을 명확히 고정합니다. scope 자체만 공동/개인 판단에 사용합니다.
+  // settlement_required는 정산 여부일 뿐, 공동/개인 분류 기준으로 쓰지 않습니다.
+  if (raw === "personal" || raw === "private" || raw === "개인" || raw.startsWith("p")) return "personal";
+  if (raw === "shared" || raw === "joint" || raw === "common" || raw === "공동" || raw.startsWith("s")) return "shared";
   return "shared";
 };
 const fixedScopeOf = (item: { scope?: unknown; settlement_required?: unknown }) => {
@@ -453,6 +455,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [backupPreview, setBackupPreview] = useState<BackupPayload | null>(null);
   const [backupFileName, setBackupFileName] = useState("");
   const [restoreInputKey, setRestoreInputKey] = useState(0);
+  const [trashItems, setTrashItems] = useState<Array<{ table: string; id: string; title: string; deleted_at: string | null }>>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -487,6 +490,10 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [vehicleForm, setVehicleForm] = useState({ name: "", plate_number: "", current_km: "0", memo: "" });
   const [maintenanceForm, setMaintenanceForm] = useState({ vehicle_id: "", item_name: "엔진오일", interval_km: "10000", last_service_km: "0", last_service_date: today(), memo: "" });
   const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", memo: "" });
+
+  const [transactionEdit, setTransactionEdit] = useState<null | { item: Transaction; type: "income" | "expense"; scope: "shared" | "personal"; title: string; amount: string; transaction_date: string; account_id: string; category_id: string; paid_by_member_id: string; settlement_required: boolean; memo: string }>(null);
+  const [fixedEdit, setFixedEdit] = useState<null | { item: FixedExpense; title: string; scope: "shared" | "personal"; amount: string; next_payment_date: string; category_id: string; account_id: string; paid_by_member_id: string; repeat_enabled: boolean; repeat_type: string; repeat_until: string; memo: string }>(null);
+  const [eventEdit, setEventEdit] = useState<null | { item: CalendarEvent; title: string; event_date: string; event_time: string; assigned_to_member_id: string; event_type: string; repeat_type: string; repeat_until: string; is_important: boolean; memo: string }>(null);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
@@ -533,24 +540,24 @@ function FamilyLifeApp({ session }: { session: Session }) {
     if (!supabase || !groupId) return;
     setLoading(true);
     const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes] = await Promise.all([
-      supabase.from("group_members").select("*").eq("group_id", groupId).order("created_at", { ascending: true }),
-      supabase.from("group_invites").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("categories").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
-      supabase.from("accounts").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("budgets").select("*").eq("group_id", groupId).order("budget_month", { ascending: false }),
-      supabase.from("transactions").select("*").eq("group_id", groupId).order("transaction_date", { ascending: false }).limit(1000),
-      supabase.from("fixed_expenses").select("*").eq("group_id", groupId).order("next_payment_date", { ascending: true }),
-      supabase.from("tasks").select("*").eq("group_id", groupId).order("due_date", { ascending: true }),
-      supabase.from("shopping_items").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("goals").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("calendar_events").select("*").eq("group_id", groupId).order("event_date", { ascending: true }),
-      supabase.from("anniversary_events").select("*").eq("group_id", groupId).order("anniversary_date", { ascending: true }),
-      supabase.from("diary_entries").select("*").eq("group_id", groupId).order("diary_date", { ascending: false }),
-      supabase.from("diary_photos").select("*").eq("group_id", groupId).order("sort_order", { ascending: true }),
-      supabase.from("settlement_records").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("vehicles").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("vehicle_maintenance_items").select("*").eq("group_id", groupId).order("created_at", { ascending: false }),
-      supabase.from("place_records").select("*").eq("group_id", groupId).order("visit_date", { ascending: false })
+      supabase.from("group_members").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: true }),
+      supabase.from("group_invites").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("categories").select("*").eq("group_id", groupId).is("deleted_at", null).order("sort_order", { ascending: true }),
+      supabase.from("accounts").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("budgets").select("*").eq("group_id", groupId).is("deleted_at", null).order("budget_month", { ascending: false }),
+      supabase.from("transactions").select("*").eq("group_id", groupId).is("deleted_at", null).order("transaction_date", { ascending: false }).limit(1000),
+      supabase.from("fixed_expenses").select("*").eq("group_id", groupId).is("deleted_at", null).order("next_payment_date", { ascending: true }),
+      supabase.from("tasks").select("*").eq("group_id", groupId).is("deleted_at", null).order("due_date", { ascending: true }),
+      supabase.from("shopping_items").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("goals").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("calendar_events").select("*").eq("group_id", groupId).is("deleted_at", null).order("event_date", { ascending: true }),
+      supabase.from("anniversary_events").select("*").eq("group_id", groupId).is("deleted_at", null).order("anniversary_date", { ascending: true }),
+      supabase.from("diary_entries").select("*").eq("group_id", groupId).is("deleted_at", null).order("diary_date", { ascending: false }),
+      supabase.from("diary_photos").select("*").eq("group_id", groupId).is("deleted_at", null).order("sort_order", { ascending: true }),
+      supabase.from("settlement_records").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("vehicles").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("vehicle_maintenance_items").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("place_records").select("*").eq("group_id", groupId).is("deleted_at", null).order("visit_date", { ascending: false })
     ]);
     setLoading(false);
     const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes].find((res) => res.error)?.error;
@@ -1279,67 +1286,50 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     showNotice({ type: "success", text: nextType === "income" ? "수입으로 변경했습니다." : "지출로 변경했습니다." });
   };
 
-  const editTransaction = async (item: Transaction) => {
-    if (!supabase || !selectedGroupId) return;
+  const editTransaction = (item: Transaction) => {
     if (!canManageTransaction(item)) {
       showNotice({ type: "error", text: transactionScopeOf(item) === "personal" ? "본인 개인 지출만 수정할 수 있습니다." : "거래 수정 권한이 없습니다." });
       return;
     }
+    setTransactionEdit({
+      item,
+      type: transactionTypeOf(item) as "income" | "expense",
+      scope: transactionScopeOf(item) as "shared" | "personal",
+      title: item.title,
+      amount: formatMoneyInput(String(item.amount ?? 0)),
+      transaction_date: item.transaction_date,
+      account_id: item.account_id ?? "",
+      category_id: item.category_id ?? "",
+      paid_by_member_id: item.paid_by_member_id ?? "",
+      settlement_required: Boolean(item.settlement_required),
+      memo: item.memo ?? ""
+    });
+  };
 
-    const currentType = transactionTypeOf(item);
-    const typeInput = window.prompt("거래 구분을 수정하세요. 수입 또는 지출", currentType === "income" ? "수입" : "지출");
-    if (typeInput === null) return;
-    const typeText = typeInput.trim().toLowerCase();
-    let nextType: Transaction["type"];
-    if (typeText === "수입" || typeText === "income" || typeText === "i" || typeText === "1") nextType = "income";
-    else if (typeText === "지출" || typeText === "expense" || typeText === "e" || typeText === "2") nextType = "expense";
-    else return showNotice({ type: "error", text: "거래 구분은 수입 또는 지출만 입력할 수 있습니다." });
-
-    const currentScope = transactionScopeOf(item);
-    const scopeInput = window.prompt("거래 범위를 수정하세요. 공동 또는 개인", currentScope === "personal" ? "개인" : "공동");
-    if (scopeInput === null) return;
-    const scopeText = scopeInput.trim().toLowerCase();
-    const nextScope: Transaction["scope"] = scopeText.includes("개") || scopeText.includes("personal") || scopeText.startsWith("p") ? "personal" : "shared";
-    if (nextScope === "personal" && !canEdit) {
-      showNotice({ type: "error", text: "개인 지출을 작성할 권한이 없습니다." });
-      return;
-    }
-
-    const title = askText("거래 내용을 수정하세요.", item.title, FIELD_LIMITS.transactionTitle);
-    if (!title) return;
-    const amount = askMoney("금액을 수정하세요.", item.amount);
-    if (amount === null) return;
-    const transactionDate = askDate("거래일을 수정하세요. 예: 2026-05-10", item.transaction_date);
-    if (!transactionDate) return;
-    const accountId = askAccountId(item.account_id);
-    if (accountId === undefined) return;
-    const categoryId = askCategoryId(item.category_id);
-    if (categoryId === undefined) return;
-    const memo = askText("세부내용을 수정하세요.", item.memo ?? "", FIELD_LIMITS.transactionMemo);
-    if (memo === null) return;
-
-    let settlementRequired = false;
-    if (nextType === "expense" && nextScope === "shared") {
-      const settlementInput = window.prompt("공동 지출 정산 대상으로 둘까요? Y/N", item.settlement_required ? "Y" : "N");
-      if (settlementInput === null) return;
-      const normalizedSettlement = settlementInput.trim().toLowerCase();
-      settlementRequired = normalizedSettlement === "y" || normalizedSettlement === "yes" || normalizedSettlement === "1" || normalizedSettlement.includes("예") || normalizedSettlement.includes("체크");
-    }
-
+  const submitTransactionEdit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !transactionEdit) return;
+    const item = transactionEdit.item;
+    if (!canManageTransaction(item)) return showNotice({ type: "error", text: "거래 수정 권한이 없습니다." });
+    const nextType = transactionEdit.type;
+    const nextScope = transactionEdit.scope;
+    const amount = asNumber(transactionEdit.amount);
+    const settlementRequired = nextType === "expense" && nextScope === "shared" ? transactionEdit.settlement_required : false;
+    if (!transactionEdit.title.trim()) return showNotice({ type: "error", text: "거래 내용을 입력하세요." });
     const reverseError = await reverseTransactionFromAccount(item);
     if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
-
     const patch = {
-      title,
+      title: transactionEdit.title.trim(),
       type: nextType,
       scope: nextScope,
       amount,
-      transaction_date: transactionDate,
-      account_id: accountId,
-      category_id: categoryId,
+      transaction_date: transactionEdit.transaction_date,
+      account_id: transactionEdit.account_id || null,
+      category_id: transactionEdit.category_id || null,
+      paid_by_member_id: transactionEdit.paid_by_member_id || null,
       settlement_required: settlementRequired,
       split_method: settlementRequired ? "equal" : "none",
-      memo: memo || null,
+      memo: transactionEdit.memo.trim() || null,
       created_by: nextScope === "personal" ? currentUserId : item.created_by
     };
     const { error } = await supabase.from("transactions").update(patch).eq("id", item.id);
@@ -1347,34 +1337,52 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       await applyTransactionToAccount(item);
       return showNotice({ type: "error", text: error.message });
     }
-
-    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: accountId });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: transactionEdit.account_id || null });
     if (balanceError) return showNotice({ type: "error", text: `거래는 수정됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
+    setTransactionEdit(null);
     await fetchGroupData(selectedGroupId);
-    showNotice({ type: "success", text: "거래 수정과 계좌 잔액 재계산이 완료되었습니다." });
+    showNotice({ type: "success", text: "거래 수정이 완료되었습니다." });
   };
 
-  const editFixedExpense = async (item: FixedExpense) => {
+  const editFixedExpense = (item: FixedExpense) => {
     if (!canManageFixedExpense(item)) return showNotice({ type: "error", text: fixedScopeOf(item) === "personal" ? "본인 개인 고정비만 수정할 수 있습니다." : "고정비 수정 권한이 없습니다." });
-    const title = askText("고정비 이름을 수정하세요.", item.title, FIELD_LIMITS.fixedTitle);
-    if (!title) return;
-    const amount = askMoney("금액을 수정하세요.", item.amount);
-    if (amount === null) return;
-    const scopeInput = window.prompt("공동/개인 중 하나를 입력하세요. shared=공동, personal=개인", item.scope === "personal" ? "personal" : "shared");
-    if (scopeInput === null) return;
-    const scope = canViewPersonal && (scopeInput.includes("개") || scopeInput.toLowerCase().startsWith("p")) ? "personal" : "shared";
-    const nextPaymentDate = askDate("첫 지출일 또는 다음 지출일을 수정하세요. 예: 2026-05-10", item.next_payment_date ?? item.start_date);
-    if (!nextPaymentDate) return;
-    const repeatEnabled = window.confirm("이 고정비를 반복 처리할까요?\n확인 = 반복함 / 취소 = 한 번만");
-    let repeatType = "none";
-    let repeatUntil: string | null = null;
-    if (repeatEnabled) {
-      const inputRepeatType = window.prompt("반복 주기를 입력하세요. daily / weekly / monthly / yearly", item.repeat_type && item.repeat_type !== "none" ? item.repeat_type : "monthly");
-      if (!inputRepeatType) return;
-      repeatType = ["daily", "weekly", "monthly", "yearly"].includes(inputRepeatType) ? inputRepeatType : "monthly";
-      repeatUntil = askDate("언제까지 반복할까요? 비워두면 종료일 없음. 예: 2027-12-31", item.repeat_until ?? "") || null;
-    }
-    await updateRow("fixed_expenses", item.id, { title, amount, scope, next_payment_date: nextPaymentDate, repeat_enabled: repeatEnabled, repeat_type: repeatType, repeat_until: repeatUntil, created_by: scope === "personal" ? currentUserId : item.created_by ?? currentUserId }, false);
+    setFixedEdit({
+      item,
+      title: item.title,
+      scope: fixedScopeOf(item) as "shared" | "personal",
+      amount: formatMoneyInput(String(item.amount ?? 0)),
+      next_payment_date: item.next_payment_date ?? item.start_date ?? today(),
+      category_id: item.category_id ?? "",
+      account_id: item.account_id ?? "",
+      paid_by_member_id: item.paid_by_member_id ?? "",
+      repeat_enabled: Boolean(item.repeat_enabled),
+      repeat_type: item.repeat_type ?? "monthly",
+      repeat_until: item.repeat_until ?? "",
+      memo: item.memo ?? ""
+    });
+  };
+
+  const submitFixedEdit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!fixedEdit) return;
+    if (!canManageFixedExpense(fixedEdit.item)) return showNotice({ type: "error", text: "고정비 수정 권한이 없습니다." });
+    const repeatEnabled = fixedEdit.repeat_enabled;
+    const repeatType = repeatEnabled ? fixedEdit.repeat_type : "none";
+    await updateRow("fixed_expenses", fixedEdit.item.id, {
+      title: fixedEdit.title.trim(),
+      scope: fixedEdit.scope,
+      amount: asNumber(fixedEdit.amount),
+      next_payment_date: fixedEdit.next_payment_date || null,
+      category_id: fixedEdit.category_id || null,
+      account_id: fixedEdit.account_id || null,
+      paid_by_member_id: fixedEdit.paid_by_member_id || null,
+      repeat_enabled: repeatEnabled,
+      repeat_type: repeatType,
+      repeat_until: repeatEnabled ? fixedEdit.repeat_until || null : null,
+      memo: fixedEdit.memo.trim() || null,
+      created_by: fixedEdit.scope === "personal" ? currentUserId : fixedEdit.item.created_by ?? currentUserId
+    }, false);
+    setFixedEdit(null);
   };
 
   const editTask = async (task: Task) => {
@@ -1402,20 +1410,37 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     await updateRow("goals", goal.id, { title, current_amount: currentAmount, target_amount: targetAmount });
   };
 
-  const editCalendarEvent = async (item: CalendarEvent) => {
-    const title = askText("일정명을 수정하세요.", item.title, FIELD_LIMITS.eventTitle);
-    if (!title) return;
-    const eventDate = askDate("일정 날짜를 수정하세요. 예: 2026-05-10", item.event_date);
-    if (!eventDate) return;
-    const eventTime = window.prompt("일정 시간을 수정하세요. 예: 18:30", item.event_time ?? "");
-    if (eventTime === null) return;
-    const repeatType = window.prompt("반복 주기를 수정하세요. none/daily/weekly/monthly/yearly", item.repeat_type ?? "none");
-    if (repeatType === null) return;
-    const safeRepeatType = ["none", "daily", "weekly", "monthly", "yearly"].includes(repeatType.trim()) ? repeatType.trim() : "none";
-    const repeatUntil = safeRepeatType === "none" ? null : (askDate("반복 종료일을 수정하세요. 비워두면 계속 반복됩니다. 예: 2026-12-31", item.repeat_until ?? "") || null);
-    const memo = askText("메모를 수정하세요.", item.memo ?? "", FIELD_LIMITS.eventMemo);
-    if (memo === null) return;
-    await updateRow("calendar_events", item.id, { title, event_date: eventDate, event_time: eventTime.trim() || null, repeat_type: safeRepeatType, repeat_until: repeatUntil, memo: memo || null });
+  const editCalendarEvent = (item: CalendarEvent) => {
+    setEventEdit({
+      item,
+      title: item.title,
+      event_date: item.event_date,
+      event_time: item.event_time ?? "",
+      assigned_to_member_id: item.assigned_to_member_id ?? "",
+      event_type: item.event_type ?? "schedule",
+      repeat_type: item.repeat_type ?? "none",
+      repeat_until: item.repeat_until ?? "",
+      is_important: Boolean(item.is_important),
+      memo: item.memo ?? ""
+    });
+  };
+
+  const submitEventEdit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!eventEdit) return;
+    const safeRepeatType = ["none", "daily", "weekly", "monthly", "yearly"].includes(eventEdit.repeat_type) ? eventEdit.repeat_type : "none";
+    await updateRow("calendar_events", eventEdit.item.id, {
+      title: eventEdit.title.trim(),
+      event_date: eventEdit.event_date,
+      event_time: eventEdit.event_time.trim() || null,
+      assigned_to_member_id: eventEdit.assigned_to_member_id || null,
+      event_type: eventEdit.event_type,
+      repeat_type: safeRepeatType,
+      repeat_until: safeRepeatType === "none" ? null : eventEdit.repeat_until || null,
+      is_important: eventEdit.is_important,
+      memo: eventEdit.memo.trim() || null
+    });
+    setEventEdit(null);
   };
 
   const editAnniversary = async (item: AnniversaryEvent) => {
@@ -1486,13 +1511,37 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       if (reverseError) return showNotice({ type: "error", text: `계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
     }
 
-    const { error } = await supabase.from(table).delete().eq("id", id);
+    const useTrash = TRASH_TABLES.includes(table as typeof TRASH_TABLES[number]);
+    const { error } = useTrash
+      ? await supabase.from(table).update({ deleted_at: new Date().toISOString(), deleted_by: currentUserId }).eq("id", id)
+      : await supabase.from(table).delete().eq("id", id);
     if (error) {
       if (targetTransaction) await applyTransactionToAccount(targetTransaction);
       return showNotice({ type: "error", text: error.message });
     }
     await fetchGroupData(selectedGroupId);
-    showNotice({ type: "success", text: targetTransaction ? "삭제했고 계좌 잔액도 되돌렸습니다." : "삭제했습니다." });
+    showNotice({ type: "success", text: targetTransaction ? "휴지통으로 이동했고 계좌 잔액도 되돌렸습니다." : useTrash ? "휴지통으로 이동했습니다." : "삭제했습니다." });
+  };
+
+  const loadTrashItems = async () => {
+    if (!supabase || !selectedGroupId || !isOwner) return showNotice({ type: "error", text: "휴지통 확인은 소유자만 가능합니다." });
+    const rows: Array<{ table: string; id: string; title: string; deleted_at: string | null }> = [];
+    for (const tableName of TRASH_TABLES) {
+      const { data, error } = await supabase.from(tableName).select("id,title,name,item_name,deleted_at").eq("group_id", selectedGroupId).not("deleted_at", "is", null).order("deleted_at", { ascending: false }).limit(20);
+      if (error) return showNotice({ type: "error", text: `${trashTableLabels[tableName]} 휴지통 조회 실패: ${error.message}` });
+      (data ?? []).forEach((item: any) => rows.push({ table: tableName, id: item.id, title: item.title ?? item.name ?? item.item_name ?? item.id, deleted_at: item.deleted_at ?? null }));
+    }
+    setTrashItems(rows.sort((a, b) => String(b.deleted_at ?? "").localeCompare(String(a.deleted_at ?? ""))).slice(0, 80));
+    showNotice({ type: "success", text: `휴지통 ${rows.length}건을 불러왔습니다.` });
+  };
+
+  const restoreTrashItem = async (table: string, id: string) => {
+    if (!supabase || !selectedGroupId || !isOwner) return;
+    const { error } = await supabase.from(table).update({ deleted_at: null, deleted_by: null }).eq("id", id);
+    if (error) return showNotice({ type: "error", text: error.message });
+    await fetchGroupData(selectedGroupId);
+    await loadTrashItems();
+    showNotice({ type: "success", text: "휴지통 항목을 복구했습니다." });
   };
 
   const toggleRow = async (table: "tasks" | "shopping_items" | "calendar_events", id: string, isDone: boolean) => {
@@ -1689,6 +1738,16 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const balance = accounts.reduce((sum, account) => sum + moneyNumber(account.balance), 0);
     return { income, variableExpense, fixedExpense, totalExpense, balance, sharedExpense, personalExpense, sharedVariableExpense, personalVariableExpense, sharedFixedExpense, personalFixedExpense };
   }, [monthTransactions, monthFixedExpenses, selectedMonth, accounts]);
+
+  const financeAuditRows = useMemo(() => [
+    { label: "수입", value: summary.income, rule: "수입 거래만 합산" },
+    { label: "변동 지출", value: summary.variableExpense, rule: "고정비 제외 지출 거래" },
+    { label: "고정비", value: summary.fixedExpense, rule: "해당 월 유효 고정비" },
+    { label: "전체 지출", value: summary.totalExpense, rule: "변동 지출 + 고정비" },
+    { label: "공동 지출", value: summary.sharedExpense, rule: "공동 거래 + 공동 고정비" },
+    { label: "개인 지출", value: summary.personalExpense, rule: "본인 개인 거래 + 개인 고정비" },
+    { label: "남은 금액", value: summary.balance, rule: "모든 계좌 잔액 합산" }
+  ], [summary]);
 
   const settlementBalances = useMemo(() => {
     const balances = new Map<string, number>();
@@ -2014,6 +2073,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <SummaryCard title="공동 지출" value={currency(summary.sharedExpense)} tone="blue" />
               {canViewPersonal && <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />}
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
+            </section>
+
+            <section className="grid two">
+              <Card title="계산 기준 점검" description="v21.2에서 고정한 가계부 카드 계산 기준입니다.">
+                <List compact>{financeAuditRows.map((row) => <li key={row.label}><span>{row.label} · {currency(row.value)} · {row.rule}</span></li>)}</List>
+              </Card>
             </section>
 
             <section className="grid three">
@@ -2552,8 +2617,65 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   )}
                 </div>
               </Card>
+
+              <Card title="휴지통·복구" description="실수로 삭제한 주요 항목을 복구합니다. 소유자만 사용할 수 있습니다.">
+                <div className="stack-form">
+                  <p className="line-item">거래/고정비/일정/다이어리/차량/장소 등 주요 항목은 바로 삭제하지 않고 휴지통으로 이동합니다.</p>
+                  <button type="button" className="secondary" onClick={loadTrashItems} disabled={!isOwner}>휴지통 불러오기</button>
+                  <List compact>{trashItems.length === 0 && <li><span>불러온 휴지통 항목이 없습니다.</span></li>}{trashItems.map((item) => <li key={`${item.table}-${item.id}`}><span>{trashTableLabels[item.table] ?? item.table} · {item.title} · {item.deleted_at ? new Date(item.deleted_at).toLocaleString("ko-KR") : "삭제일 없음"}</span><button className="text-button" onClick={() => restoreTrashItem(item.table, item.id)} disabled={!isOwner}>복구</button></li>)}</List>
+                </div>
+              </Card>
             </section>
           </>
+        )}
+
+
+        {transactionEdit && (
+          <div className="modal-backdrop">
+            <form className="modal-card stack-form" onSubmit={submitTransactionEdit}>
+              <div className="between"><h3>거래 수정</h3><button type="button" className="text-button" onClick={() => setTransactionEdit(null)}>닫기</button></div>
+              <input value={transactionEdit.title} onChange={(event) => setTransactionEdit({ ...transactionEdit, title: limitText(event.target.value, FIELD_LIMITS.transactionTitle) })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} />
+              <div className="form-row"><select value={transactionEdit.type} onChange={(event) => setTransactionEdit({ ...transactionEdit, type: event.target.value as "income" | "expense", settlement_required: event.target.value === "income" ? false : transactionEdit.settlement_required })}><option value="expense">지출</option><option value="income">수입</option></select><select value={transactionEdit.scope} onChange={(event) => setTransactionEdit({ ...transactionEdit, scope: event.target.value as "shared" | "personal" })}><option value="shared">공동</option><option value="personal">개인</option></select></div>
+              <div className="form-row"><input type="date" value={transactionEdit.transaction_date} onChange={(event) => setTransactionEdit({ ...transactionEdit, transaction_date: event.target.value })} /><input value={transactionEdit.amount} onChange={(event) => setTransactionEdit({ ...transactionEdit, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} /></div>
+              <div className="form-row"><select value={transactionEdit.account_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, account_id: event.target.value })}><option value="">계좌 선택</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select value={transactionEdit.category_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, category_id: event.target.value })}><option value="">카테고리</option>{categories.filter((category) => category.type === transactionEdit.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></div>
+              <select value={transactionEdit.paid_by_member_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, paid_by_member_id: event.target.value })}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+              <textarea value={transactionEdit.memo} onChange={(event) => setTransactionEdit({ ...transactionEdit, memo: limitText(event.target.value, FIELD_LIMITS.transactionMemo) })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} />
+              {transactionEdit.type === "expense" && transactionEdit.scope === "shared" && <label className="check-line"><input type="checkbox" checked={transactionEdit.settlement_required} onChange={(event) => setTransactionEdit({ ...transactionEdit, settlement_required: event.target.checked })} /> 공동 지출 정산 대상</label>}
+              <button>수정 저장</button>
+            </form>
+          </div>
+        )}
+
+        {fixedEdit && (
+          <div className="modal-backdrop">
+            <form className="modal-card stack-form" onSubmit={submitFixedEdit}>
+              <div className="between"><h3>고정비 수정</h3><button type="button" className="text-button" onClick={() => setFixedEdit(null)}>닫기</button></div>
+              <input value={fixedEdit.title} onChange={(event) => setFixedEdit({ ...fixedEdit, title: limitText(event.target.value, FIELD_LIMITS.fixedTitle) })} placeholder="고정비 이름" maxLength={FIELD_LIMITS.fixedTitle} />
+              <div className="form-row"><select value={fixedEdit.scope} onChange={(event) => setFixedEdit({ ...fixedEdit, scope: event.target.value as "shared" | "personal" })}><option value="shared">공동</option><option value="personal">개인</option></select><input value={fixedEdit.amount} onChange={(event) => setFixedEdit({ ...fixedEdit, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} /></div>
+              <div className="form-row"><input type="date" value={fixedEdit.next_payment_date} onChange={(event) => setFixedEdit({ ...fixedEdit, next_payment_date: event.target.value })} /><select value={fixedEdit.category_id} onChange={(event) => setFixedEdit({ ...fixedEdit, category_id: event.target.value })}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></div>
+              <div className="form-row"><select value={fixedEdit.account_id} onChange={(event) => setFixedEdit({ ...fixedEdit, account_id: event.target.value })}><option value="">계좌 선택</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select value={fixedEdit.paid_by_member_id} onChange={(event) => setFixedEdit({ ...fixedEdit, paid_by_member_id: event.target.value })}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select></div>
+              <label className="check-line"><input type="checkbox" checked={fixedEdit.repeat_enabled} onChange={(event) => setFixedEdit({ ...fixedEdit, repeat_enabled: event.target.checked })} /> 반복 사용</label>
+              {fixedEdit.repeat_enabled && <div className="form-row"><select value={fixedEdit.repeat_type} onChange={(event) => setFixedEdit({ ...fixedEdit, repeat_type: event.target.value })}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select><input type="date" value={fixedEdit.repeat_until} onChange={(event) => setFixedEdit({ ...fixedEdit, repeat_until: event.target.value })} /></div>}
+              <textarea value={fixedEdit.memo} onChange={(event) => setFixedEdit({ ...fixedEdit, memo: limitText(event.target.value, FIELD_LIMITS.memo) })} placeholder="메모" maxLength={FIELD_LIMITS.memo} />
+              <button>수정 저장</button>
+            </form>
+          </div>
+        )}
+
+        {eventEdit && (
+          <div className="modal-backdrop">
+            <form className="modal-card stack-form" onSubmit={submitEventEdit}>
+              <div className="between"><h3>일정 수정</h3><button type="button" className="text-button" onClick={() => setEventEdit(null)}>닫기</button></div>
+              <input value={eventEdit.title} onChange={(event) => setEventEdit({ ...eventEdit, title: limitText(event.target.value, FIELD_LIMITS.eventTitle) })} placeholder="일정명" maxLength={FIELD_LIMITS.eventTitle} />
+              <div className="form-row"><input type="date" value={eventEdit.event_date} onChange={(event) => setEventEdit({ ...eventEdit, event_date: event.target.value })} /><input type="time" value={eventEdit.event_time} onChange={(event) => setEventEdit({ ...eventEdit, event_time: event.target.value })} /></div>
+              <div className="form-row"><select value={eventEdit.event_type} onChange={(event) => setEventEdit({ ...eventEdit, event_type: event.target.value })}><option value="schedule">일반 일정</option><option value="hospital">병원/건강</option><option value="payment">납부일</option><option value="date">데이트/외출</option><option value="family">가족행사</option></select><select value={eventEdit.repeat_type} onChange={(event) => setEventEdit({ ...eventEdit, repeat_type: event.target.value })}><option value="none">반복 없음</option><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select></div>
+              {eventEdit.repeat_type !== "none" && <input type="date" value={eventEdit.repeat_until} onChange={(event) => setEventEdit({ ...eventEdit, repeat_until: event.target.value })} />}
+              <select value={eventEdit.assigned_to_member_id} onChange={(event) => setEventEdit({ ...eventEdit, assigned_to_member_id: event.target.value })}><option value="">담당자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+              <textarea value={eventEdit.memo} onChange={(event) => setEventEdit({ ...eventEdit, memo: limitText(event.target.value, FIELD_LIMITS.eventMemo) })} placeholder="메모" maxLength={FIELD_LIMITS.eventMemo} />
+              <label className="check-line"><input type="checkbox" checked={eventEdit.is_important} onChange={(event) => setEventEdit({ ...eventEdit, is_important: event.target.checked })} /> 중요 일정</label>
+              <button>수정 저장</button>
+            </form>
+          </div>
         )}
       </section>
     </main>
