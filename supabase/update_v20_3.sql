@@ -1,0 +1,3 @@
+-- Together Life v20.3
+-- 수입전환/지출전환 빠른 버튼 제거 버전입니다.
+-- DB 구조 변경 없음. Supabase SQL Editor에서 실행할 필요 없습니다.
