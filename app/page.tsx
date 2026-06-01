@@ -23,6 +23,7 @@ type Transaction = {
   title: string;
   transaction_date: string;
   amount: number;
+  balance_delta?: number | null;
   category_id: string | null;
   account_id: string | null;
   paid_by_member_id: string | null;
@@ -38,6 +39,7 @@ type FixedExpense = {
   start_date: string;
   next_payment_date: string | null;
   amount: number;
+  balance_delta?: number | null;
   category_id: string | null;
   account_id: string | null;
   paid_by_member_id: string | null;
@@ -129,7 +131,12 @@ const monthStart = (month: string) => `${month}-01`;
 const currency = (value: number | string | null | undefined) => `${Number(value ?? 0).toLocaleString("ko-KR")}원`;
 const asNumber = (value: string) => Number(String(value).replaceAll(",", "")) || 0;
 const moneyNumber = (value: unknown) => Number(String(value ?? 0).replaceAll(",", "")) || 0;
-const transactionTypeOf = (item: { type?: unknown }) => {
+const transactionTypeOf = (item: { type?: unknown; balance_delta?: unknown }) => {
+  // v26.1: 거래내역 표시는 저장 당시 계좌에 실제 반영한 balance_delta를 최우선으로 봅니다.
+  // 수입 선택 후 DB type이 과거 로직 때문에 expense로 남아도 balance_delta가 +면 수입으로 표시합니다.
+  const storedDelta = Number(item.balance_delta);
+  if (Number.isFinite(storedDelta) && storedDelta > 0) return "income";
+  if (Number.isFinite(storedDelta) && storedDelta < 0) return "expense";
   const type = String(item.type ?? "").trim().toLowerCase();
   if (type.includes("income") || type.includes("수입")) return "income";
   // v19.4: 예전 버전에서 저장된 transfer/이체 거래는 더 이상 별도 유형으로 쓰지 않고 지출로 통합합니다.
@@ -884,18 +891,20 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return "expense";
   };
 
-  const transactionBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null }) => {
+  const transactionBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null; balance_delta?: unknown }) => {
+    const storedDelta = Number(transaction.balance_delta);
+    if (Number.isFinite(storedDelta) && storedDelta !== 0) return storedDelta;
     const normalizedType = effectiveTransactionTypeForBalance(transaction);
     const amount = Math.abs(Number(transaction.amount ?? 0));
-    // 저장/복구용 기준: 수입은 계좌 +, 지출은 계좌 -
+    // v26: 거래가 계좌에 실제로 반영한 금액을 balance_delta로 저장합니다.
+    // 기존 데이터에 balance_delta가 없을 때만 type/category 기준으로 보정 계산합니다.
     return normalizedType === "income" ? amount : -amount;
   };
 
-  const transactionDeleteBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null }) => {
-    const normalizedType = effectiveTransactionTypeForBalance(transaction);
-    const amount = Math.abs(Number(transaction.amount ?? 0));
-    // 삭제용 기준: 수입 삭제는 계좌 -, 지출 삭제는 계좌 +
-    return normalizedType === "income" ? -amount : amount;
+  const transactionDeleteBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null; balance_delta?: unknown }) => {
+    // v26: 삭제는 원래 계좌에 반영했던 balance_delta의 정확한 반대값을 적용합니다.
+    // 수입 삭제 = -balance_delta, 지출 삭제 = -(-지출금액)으로 고정되어 타입 오판을 방지합니다.
+    return -transactionBalanceDeltaFor(transaction);
   };
 
   const adjustAccountBalance = async (accountId: string | null, delta: number) => {
@@ -914,11 +923,11 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return error?.message ?? null;
   };
 
-  const applyTransactionToAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id">>) => {
+  const applyTransactionToAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id" | "balance_delta">>) => {
     return adjustAccountBalance(transaction.account_id, transactionBalanceDeltaFor(transaction));
   };
 
-  const reverseTransactionFromAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id">>) => {
+  const reverseTransactionFromAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id" | "balance_delta">>) => {
     return adjustAccountBalance(transaction.account_id, -transactionBalanceDeltaFor(transaction));
   };
 
@@ -933,11 +942,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
     // v24.4: 개인/공동 가계부 입력을 완전히 분리합니다.
     // 입력 카드 자체가 scope를 결정하므로, 사용자가 공동/개인 선택을 잘못 누를 가능성을 줄입니다.
     // v25.1: 수입/지출 선택값을 최우선으로 저장하고, 수입 카테고리도 수입으로 보정합니다.
-    const selectedCategoryType = categoryTypeOf(selectedCategory);
-    const selectedFormType = transactionTypeOf({ type: form.type });
-    const nextType: "income" | "expense" = selectedFormType === "income" || selectedCategoryType === "income" ? "income" : "expense";
+    const selectedFormType = String(form.type).trim() === "income" ? "income" : "expense";
+    // v26.1: 저장 구분은 사용자가 가계부 입력에서 선택한 수입/지출 값을 최우선으로 고정합니다.
+    // 카테고리는 분류 용도일 뿐, 거래내역 표기 구분을 지출로 덮어쓰지 않습니다.
+    const nextType: "income" | "expense" = selectedFormType;
     const nextScope: "shared" | "personal" = inputScope === "personal" && canViewPersonal ? "personal" : "shared";
     const nextSettlementRequired = nextType === "expense" && nextScope === "shared" ? form.settlement_required : false;
+    const nextBalanceDelta = nextType === "income" ? Math.abs(amount) : -Math.abs(amount);
     const nextTransaction = {
       group_id: selectedGroupId,
       created_by: currentUserId,
@@ -946,6 +957,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
       scope: nextScope,
       transaction_date: form.transaction_date,
       amount,
+      balance_delta: nextBalanceDelta,
       category_id: form.category_id || null,
       account_id: form.account_id || null,
       paid_by_member_id: form.paid_by_member_id || null,
@@ -1486,8 +1498,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const reverseError = await reverseTransactionFromAccount(item);
     if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
 
+    const nextBalanceDelta = nextType === "income" ? Math.abs(Number(item.amount ?? 0)) : -Math.abs(Number(item.amount ?? 0));
     const patch = {
       type: nextType,
+      balance_delta: nextBalanceDelta,
       settlement_required: nextSettlementRequired,
       split_method: nextSettlementRequired ? "equal" : "none"
     };
@@ -1497,7 +1511,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return showNotice({ type: "error", text: error.message });
     }
 
-    const balanceError = await applyTransactionToAccount({ type: nextType, amount: item.amount, account_id: item.account_id, category_id: item.category_id });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount: item.amount, balance_delta: nextBalanceDelta, account_id: item.account_id, category_id: item.category_id });
     if (balanceError) return showNotice({ type: "error", text: `거래 구분은 변경됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
     await fetchGroupData(selectedGroupId);
     showNotice({ type: "success", text: nextType === "income" ? "수입으로 변경했습니다." : "지출로 변경했습니다." });
@@ -1532,6 +1546,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const nextScope = transactionEdit.scope;
     const amount = asNumber(transactionEdit.amount);
     const settlementRequired = nextType === "expense" && nextScope === "shared" ? transactionEdit.settlement_required : false;
+    const nextBalanceDelta = nextType === "income" ? Math.abs(amount) : -Math.abs(amount);
     if (!transactionEdit.title.trim()) return showNotice({ type: "error", text: "거래 내용을 입력하세요." });
     const reverseError = await reverseTransactionFromAccount(item);
     if (reverseError) return showNotice({ type: "error", text: `기존 계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
@@ -1540,6 +1555,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       type: nextType,
       scope: nextScope,
       amount,
+      balance_delta: nextBalanceDelta,
       transaction_date: transactionEdit.transaction_date,
       account_id: transactionEdit.account_id || null,
       category_id: transactionEdit.category_id || null,
@@ -1554,7 +1570,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       await applyTransactionToAccount(item);
       return showNotice({ type: "error", text: error.message });
     }
-    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: transactionEdit.account_id || null, category_id: transactionEdit.category_id || null });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount, balance_delta: nextBalanceDelta, account_id: transactionEdit.account_id || null, category_id: transactionEdit.category_id || null });
     if (balanceError) return showNotice({ type: "error", text: `거래는 수정됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
     setTransactionEdit(null);
     await fetchGroupData(selectedGroupId);

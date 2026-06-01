@@ -28,6 +28,6 @@ cd "$env:USERPROFILE\OneDrive\Home\프로그램\family-life-manager"
 ```
 
 
-## v25.3
+## v26.1
 - 가계부 수입/지출 저장 및 삭제 시 계좌 잔액 반영 방향 보정
 - Supabase DB 구조 변경 없음
