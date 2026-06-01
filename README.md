@@ -26,3 +26,8 @@ cd "$env:USERPROFILE\OneDrive\Home\프로그램\family-life-manager"
 & "C:\Program Files\nodejs\npm.cmd" install
 & "C:\Program Files\nodejs\npm.cmd" run dev
 ```
+
+
+## v25.3
+- 가계부 수입/지출 저장 및 삭제 시 계좌 잔액 반영 방향 보정
+- Supabase DB 구조 변경 없음

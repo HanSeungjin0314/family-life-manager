@@ -137,6 +137,11 @@ const transactionTypeOf = (item: { type?: unknown }) => {
   if (type.includes("expense") || type.includes("지출") || type.includes("transfer") || type.includes("이체")) return "expense";
   return "expense";
 };
+const categoryTypeOf = (item: { type?: unknown } | null | undefined) => {
+  const type = String(item?.type ?? "").trim().toLowerCase();
+  if (type.includes("income") || type.includes("수입")) return "income";
+  return "expense";
+};
 const transactionIsExpense = (item: { type?: unknown }) => transactionTypeOf(item) === "expense";
 const transactionScopeOf = (item: { scope?: unknown; settlement_required?: unknown }) => {
   const raw = String(item.scope ?? "").trim().toLowerCase();
@@ -864,25 +869,57 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   const transactionBalanceDelta = (type: Transaction["type"] | string, amount: number) => {
     const normalizedType = transactionTypeOf({ type });
-    if (normalizedType === "income") return Math.abs(amount);
-    return -Math.abs(amount);
+    return normalizedType === "income" ? Math.abs(amount) : -Math.abs(amount);
+  };
+
+  const effectiveTransactionTypeForBalance = (transaction: { type?: unknown; category_id?: string | null }) => {
+    const explicitType = transactionTypeOf(transaction);
+    // v25.2: 저장된 거래 type을 최우선으로 봅니다.
+    // 수입 삭제가 +로 되돌아가던 문제를 막기 위해, type=income이면 카테고리와 무관하게 수입으로 처리합니다.
+    if (explicitType === "income") return "income";
+    const linkedCategory = transaction.category_id ? categories.find((category) => category.id === transaction.category_id) : null;
+    const linkedCategoryType = categoryTypeOf(linkedCategory);
+    // 예전 버전에서 수입 카테고리 거래가 expense로 잘못 남은 경우만 보정합니다.
+    if (linkedCategory && linkedCategoryType === "income") return "income";
+    return "expense";
+  };
+
+  const transactionBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null }) => {
+    const normalizedType = effectiveTransactionTypeForBalance(transaction);
+    const amount = Math.abs(Number(transaction.amount ?? 0));
+    // 저장/복구용 기준: 수입은 계좌 +, 지출은 계좌 -
+    return normalizedType === "income" ? amount : -amount;
+  };
+
+  const transactionDeleteBalanceDeltaFor = (transaction: { type?: unknown; amount?: unknown; category_id?: string | null }) => {
+    const normalizedType = effectiveTransactionTypeForBalance(transaction);
+    const amount = Math.abs(Number(transaction.amount ?? 0));
+    // 삭제용 기준: 수입 삭제는 계좌 -, 지출 삭제는 계좌 +
+    return normalizedType === "income" ? -amount : amount;
   };
 
   const adjustAccountBalance = async (accountId: string | null, delta: number) => {
     if (!supabase || !accountId || delta === 0) return null;
-    const account = accounts.find((item) => item.id === accountId);
+    // v25.3: 계좌 잔액은 React 화면 상태가 아니라 Supabase의 최신 balance를 다시 읽어서 계산합니다.
+    // 삭제/수정 직후 상태가 늦게 갱신되어도 잔액이 중복으로 + 처리되는 문제를 막습니다.
+    const { data: account, error: readError } = await supabase
+      .from("accounts")
+      .select("balance")
+      .eq("id", accountId)
+      .single();
+    if (readError) return readError.message;
     if (!account) return "연결 계좌를 찾을 수 없습니다.";
-    const nextBalance = Number(account.balance ?? 0) + delta;
+    const nextBalance = Number((account as { balance?: number | string | null }).balance ?? 0) + delta;
     const { error } = await supabase.from("accounts").update({ balance: nextBalance }).eq("id", accountId);
     return error?.message ?? null;
   };
 
-  const applyTransactionToAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id">) => {
-    return adjustAccountBalance(transaction.account_id, transactionBalanceDelta(transaction.type, Number(transaction.amount)));
+  const applyTransactionToAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id">>) => {
+    return adjustAccountBalance(transaction.account_id, transactionBalanceDeltaFor(transaction));
   };
 
-  const reverseTransactionFromAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id">) => {
-    return adjustAccountBalance(transaction.account_id, -transactionBalanceDelta(transaction.type, Number(transaction.amount)));
+  const reverseTransactionFromAccount = async (transaction: Pick<Transaction, "type" | "amount" | "account_id"> & Partial<Pick<Transaction, "category_id">>) => {
+    return adjustAccountBalance(transaction.account_id, -transactionBalanceDeltaFor(transaction));
   };
 
   const addTransaction = async (event: FormEvent, inputScope: "shared" | "personal") => {
@@ -895,7 +932,10 @@ function FamilyLifeApp({ session }: { session: Session }) {
     const selectedCategory = categories.find((category) => category.id === form.category_id);
     // v24.4: 개인/공동 가계부 입력을 완전히 분리합니다.
     // 입력 카드 자체가 scope를 결정하므로, 사용자가 공동/개인 선택을 잘못 누를 가능성을 줄입니다.
-    const nextType: "income" | "expense" = selectedCategory?.type === "income" || form.type === "income" ? "income" : "expense";
+    // v25.1: 수입/지출 선택값을 최우선으로 저장하고, 수입 카테고리도 수입으로 보정합니다.
+    const selectedCategoryType = categoryTypeOf(selectedCategory);
+    const selectedFormType = transactionTypeOf({ type: form.type });
+    const nextType: "income" | "expense" = selectedFormType === "income" || selectedCategoryType === "income" ? "income" : "expense";
     const nextScope: "shared" | "personal" = inputScope === "personal" && canViewPersonal ? "personal" : "shared";
     const nextSettlementRequired = nextType === "expense" && nextScope === "shared" ? form.settlement_required : false;
     const nextTransaction = {
@@ -1354,7 +1394,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   };
 
   const askCategoryId = (currentCategoryId: string | null | undefined) => {
-    const categoryLines = categories.map((category, index) => `${index + 1}. ${category.name} (${category.type === "income" ? "수입" : "지출"})`).join("\n");
+    const categoryLines = categories.map((category, index) => `${index + 1}. ${category.name} (${categoryTypeOf(category) === "income" ? "수입" : "지출"})`).join("\n");
     const currentIndex = categories.findIndex((category) => category.id === currentCategoryId);
     const next = window.prompt(
       `카테고리를 수정하세요.\n번호를 입력하거나 카테고리명을 입력하세요.\n빈칸으로 저장하면 미분류로 변경됩니다.\n\n${categoryLines || "등록된 카테고리가 없습니다."}`,
@@ -1457,7 +1497,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return showNotice({ type: "error", text: error.message });
     }
 
-    const balanceError = await applyTransactionToAccount({ type: nextType, amount: item.amount, account_id: item.account_id });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount: item.amount, account_id: item.account_id, category_id: item.category_id });
     if (balanceError) return showNotice({ type: "error", text: `거래 구분은 변경됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
     await fetchGroupData(selectedGroupId);
     showNotice({ type: "success", text: nextType === "income" ? "수입으로 변경했습니다." : "지출로 변경했습니다." });
@@ -1514,7 +1554,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       await applyTransactionToAccount(item);
       return showNotice({ type: "error", text: error.message });
     }
-    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: transactionEdit.account_id || null });
+    const balanceError = await applyTransactionToAccount({ type: nextType, amount, account_id: transactionEdit.account_id || null, category_id: transactionEdit.category_id || null });
     if (balanceError) return showNotice({ type: "error", text: `거래는 수정됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
     setTransactionEdit(null);
     await fetchGroupData(selectedGroupId);
@@ -1669,9 +1709,11 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     showNotice({ type: "success", text: isCompleted ? "정산을 완료 처리했습니다." : `일부 수령 처리했습니다. 남은 금액은 ${currency(Number(record.amount) - nextPaidAmount)}입니다.` });
   };
 
-  const removeRow = async (table: string, id: string, adminOnly = false) => {
+  const removeRow = async (table: string, id: string, adminOnly = false, transactionOverride?: Transaction) => {
     if (!supabase || !selectedGroupId) return;
-    const targetTransaction = table === "transactions" ? transactions.find((item) => item.id === id) : null;
+    // v25.3: 거래 삭제는 화면에 표시된 보정 거래 객체를 우선 사용합니다.
+    // 예전 데이터가 DB에는 expense로 남아 있어도 화면/카테고리상 수입이면 수입 삭제(-)로 처리됩니다.
+    const targetTransaction = table === "transactions" ? transactionOverride ?? transactions.find((item) => item.id === id) : null;
     if (targetTransaction) {
       if (!canManageTransaction(targetTransaction)) {
         showNotice({ type: "error", text: transactionScopeOf(targetTransaction) === "personal" ? "본인 개인 지출만 삭제할 수 있습니다." : "거래 삭제 권한이 없습니다." });
@@ -1683,8 +1725,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     }
     if (!window.confirm("정말 삭제하시겠습니까?")) return;
 
+    let deleteBalanceDelta = 0;
     if (targetTransaction) {
-      const reverseError = await reverseTransactionFromAccount(targetTransaction);
+      deleteBalanceDelta = transactionDeleteBalanceDeltaFor(targetTransaction);
+      const reverseError = await adjustAccountBalance(targetTransaction.account_id, deleteBalanceDelta);
       if (reverseError) return showNotice({ type: "error", text: `계좌 잔액 되돌리기에 실패했습니다: ${reverseError}` });
     }
 
@@ -1693,11 +1737,21 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       ? await supabase.from(table).update({ deleted_at: new Date().toISOString(), deleted_by: currentUserId }).eq("id", id)
       : await supabase.from(table).delete().eq("id", id);
     if (error) {
-      if (targetTransaction) await applyTransactionToAccount(targetTransaction);
+      if (targetTransaction) await adjustAccountBalance(targetTransaction.account_id, -deleteBalanceDelta);
       return showNotice({ type: "error", text: error.message });
     }
     await fetchGroupData(selectedGroupId);
-    showNotice({ type: "success", text: targetTransaction ? "휴지통으로 이동했고 계좌 잔액도 되돌렸습니다." : useTrash ? "휴지통으로 이동했습니다." : "삭제했습니다." });
+    if (targetTransaction) {
+      const deleteType = effectiveTransactionTypeForBalance(targetTransaction);
+      showNotice({
+        type: "success",
+        text: deleteType === "income"
+          ? `수입을 삭제했습니다. 연결 계좌에서 ${currency(Math.abs(Number(targetTransaction.amount ?? 0)))} 차감했습니다.`
+          : `지출을 삭제했습니다. 연결 계좌에 ${currency(Math.abs(Number(targetTransaction.amount ?? 0)))} 복구했습니다.`
+      });
+    } else {
+      showNotice({ type: "success", text: useTrash ? "휴지통으로 이동했습니다." : "삭제했습니다." });
+    }
   };
 
   const loadTrashItems = async () => {
@@ -1742,7 +1796,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   };
 
   const normalizedTransactions = useMemo(() => {
-    const categoryTypeMap = new Map(categories.map((category) => [category.id, category.type]));
+    const categoryTypeMap = new Map(categories.map((category) => [category.id, categoryTypeOf(category)]));
     return transactions.map((item) => {
       const categoryType = item.category_id ? categoryTypeMap.get(item.category_id) : null;
       if (categoryType === "income" && transactionTypeOf(item) !== "income") {
@@ -2350,7 +2404,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <select value={personalTransactionForm.type} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: false })} disabled={!canEdit || !canViewPersonal}><option value="expense">지출</option><option value="income">수입</option></select>
                   <div className="form-row"><input type="date" value={personalTransactionForm.transaction_date} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, transaction_date: event.target.value })} disabled={!canEdit || !canViewPersonal} /><input value={personalTransactionForm.amount} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit || !canViewPersonal} /></div>
                   <select value={personalTransactionForm.account_id} onChange={(event) => { const accountId = event.target.value; rememberTransactionAccount("personal", accountId); setPersonalTransactionForm({ ...personalTransactionForm, account_id: accountId }); }} disabled={!canEdit || !canViewPersonal}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
-                  <select value={personalTransactionForm.category_id} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, category_id: event.target.value })} disabled={!canEdit || !canViewPersonal}><option value="">카테고리</option>{categories.filter((category) => category.type === personalTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <select value={personalTransactionForm.category_id} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, category_id: event.target.value })} disabled={!canEdit || !canViewPersonal}><option value="">카테고리</option>{categories.filter((category) => categoryTypeOf(category) === personalTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <textarea rows={3} value={personalTransactionForm.memo} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, memo: event.target.value })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit || !canViewPersonal} />
                   <select value={personalTransactionForm.paid_by_member_id} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit || !canViewPersonal}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   <p className="form-help">개인 가계부 입력은 정산 대상에서 자동 제외됩니다.</p>
@@ -2364,7 +2418,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <select value={sharedTransactionForm.type} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: event.target.value === "expense" ? sharedTransactionForm.settlement_required : false })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
                   <div className="form-row"><input type="date" value={sharedTransactionForm.transaction_date} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={sharedTransactionForm.amount} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
                   <select value={sharedTransactionForm.account_id} onChange={(event) => { const accountId = event.target.value; rememberTransactionAccount("shared", accountId); setSharedTransactionForm({ ...sharedTransactionForm, account_id: accountId }); }} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
-                  <select value={sharedTransactionForm.category_id} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === sharedTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <select value={sharedTransactionForm.category_id} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => categoryTypeOf(category) === sharedTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <textarea rows={3} value={sharedTransactionForm.memo} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, memo: event.target.value })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit} />
                   <select value={sharedTransactionForm.paid_by_member_id} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
                   {sharedTransactionForm.type === "expense" && <label className="check-line"><input type="checkbox" checked={sharedTransactionForm.settlement_required} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>}
@@ -2459,7 +2513,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {filteredTransactions.length === 0 ? (
                     <tr><td colSpan={9}>조건에 맞는 거래내역이 없습니다.</td></tr>
                   ) : filteredTransactions.map((item) => (
-                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>
+                    <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id, false, item)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>
                   ))}
                 </tbody></table></div>
               </Card>
@@ -2980,7 +3034,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <select value={categoryForm.type} onChange={(event) => setCategoryForm({ ...categoryForm, type: event.target.value })} disabled={!canAdmin}><option value="expense">지출</option><option value="income">수입</option></select>
                   <button className="secondary" disabled={!canAdmin}>추가</button>
                 </form>
-                <List compact>{categories.length === 0 && <li><span>등록된 카테고리가 없습니다.</span></li>}{categories.map((category) => <li key={category.id}><span>{category.name} · {category.type === "income" ? "수입" : "지출"}</span><div className="inline-actions"><button className="text-button" onClick={() => editCategory(category)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("categories", category.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{categories.length === 0 && <li><span>등록된 카테고리가 없습니다.</span></li>}{categories.map((category) => <li key={category.id}><span>{category.name} · {categoryTypeOf(category) === "income" ? "수입" : "지출"}</span><div className="inline-actions"><button className="text-button" onClick={() => editCategory(category)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("categories", category.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
               </section>
               <button type="button" className="secondary" onClick={() => setShowAccountCategoryModal(false)}>닫기</button>
             </div>
@@ -2994,7 +3048,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <input value={transactionEdit.title} onChange={(event) => setTransactionEdit({ ...transactionEdit, title: limitText(event.target.value, FIELD_LIMITS.transactionTitle) })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} />
               <div className="form-row"><select value={transactionEdit.type} onChange={(event) => setTransactionEdit({ ...transactionEdit, type: event.target.value as "income" | "expense", settlement_required: event.target.value === "income" ? false : transactionEdit.settlement_required })}><option value="expense">지출</option><option value="income">수입</option></select><select value={transactionEdit.scope} onChange={(event) => setTransactionEdit({ ...transactionEdit, scope: event.target.value as "shared" | "personal" })}><option value="shared">공동</option><option value="personal">개인</option></select></div>
               <div className="form-row"><input type="date" value={transactionEdit.transaction_date} onChange={(event) => setTransactionEdit({ ...transactionEdit, transaction_date: event.target.value })} /><input value={transactionEdit.amount} onChange={(event) => setTransactionEdit({ ...transactionEdit, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} /></div>
-              <div className="form-row"><select value={transactionEdit.account_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, account_id: event.target.value })}><option value="">계좌 선택</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select value={transactionEdit.category_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, category_id: event.target.value })}><option value="">카테고리</option>{categories.filter((category) => category.type === transactionEdit.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></div>
+              <div className="form-row"><select value={transactionEdit.account_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, account_id: event.target.value })}><option value="">계좌 선택</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select value={transactionEdit.category_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, category_id: event.target.value })}><option value="">카테고리</option>{categories.filter((category) => categoryTypeOf(category) === transactionEdit.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></div>
               <select value={transactionEdit.paid_by_member_id} onChange={(event) => setTransactionEdit({ ...transactionEdit, paid_by_member_id: event.target.value })}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
               <textarea value={transactionEdit.memo} onChange={(event) => setTransactionEdit({ ...transactionEdit, memo: limitText(event.target.value, FIELD_LIMITS.transactionMemo) })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} />
               {transactionEdit.type === "expense" && transactionEdit.scope === "shared" && <label className="check-line"><input type="checkbox" checked={transactionEdit.settlement_required} onChange={(event) => setTransactionEdit({ ...transactionEdit, settlement_required: event.target.checked })} /> 공동 지출 정산 대상</label>}
