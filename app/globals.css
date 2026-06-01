@@ -71,6 +71,12 @@ hr { border: 0; border-top: 1px solid var(--line); width: 100%; margin: 14px 0; 
 .summary-card.orange { border-top: 4px solid var(--orange); }
 .summary-card.gray { border-top: 4px solid #64748b; }
 
+.home-summary-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.quick-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.quick-overview-item { border: 1px solid var(--line); background: #f8fafc; border-radius: 16px; padding: 14px; display: grid; gap: 6px; }
+.quick-overview-item span { color: var(--muted); font-size: 13px; font-weight: 700; }
+.quick-overview-item strong { font-size: 20px; }
+
 .grid { display: grid; gap: 18px; }
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -98,6 +104,9 @@ hr { border: 0; border-top: 1px solid var(--line); width: 100%; margin: 14px 0; 
 .between { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .progress { height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
 .progress span { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+.chart-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.pill-button { border: 1px solid var(--line); background: #f8fafc; color: var(--muted); border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 900; }
+.pill-button.active { background: var(--primary); border-color: var(--primary); color: white; }
 .bar-chart { display: grid; gap: 12px; }
 .bar-row { display: grid; grid-template-columns: 44px 1fr 115px; gap: 10px; align-items: center; }
 .bar-row span { font-size: 13px; font-weight: 900; color: var(--muted); }
@@ -117,6 +126,7 @@ td.right { text-align: right; font-weight: 900; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .home-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .grid.three { grid-template-columns: 1fr; }
 }
 
@@ -124,6 +134,7 @@ td.right { text-align: right; font-weight: 900; }
   .app-shell { padding: 12px; }
   .topbar { align-items: stretch; flex-direction: column; }
   .summary-grid, .grid.two { grid-template-columns: 1fr; }
+  .quick-overview-grid { grid-template-columns: 1fr; }
   .inline-form, .form-row { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 38px 1fr; }
   .bar-row strong { grid-column: 2; text-align: left; }
@@ -249,3 +260,25 @@ textarea { resize: vertical; min-height: 76px; }
 .chip.safe { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
 .chip.warning { background: #fef3c7; color: #92400e; border-color: #fde68a; }
 .chip.danger { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+
+/* v24.1 finance split / fixed list / home photo cleanup */
+.finance-split-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.finance-split-summary .summary-card { padding: 14px; box-shadow: none; }
+.finance-split-summary .summary-card strong { font-size: 17px; }
+.scroll-list { max-height: 320px; overflow: auto; padding-right: 4px; }
+.fixed-list-scroll .simple-list { margin-top: 8px; }
+.home-photo-list { display: grid; gap: 10px; }
+.home-photo-item { width: 100%; display: grid; grid-template-columns: 54px 90px 1fr; align-items: center; gap: 10px; padding: 10px; border-radius: 14px; border: 1px solid var(--line); background: #f9fafb; color: var(--text); text-align: left; }
+.home-photo-item:hover { background: #eef2ff; transform: none; }
+.home-photo-item img, .home-photo-item > span { width: 54px; height: 54px; border-radius: 12px; object-fit: cover; background: white; display: grid; place-items: center; }
+.home-photo-item strong { font-size: 13px; }
+.home-photo-item small { color: var(--muted); font-weight: 700; line-height: 1.35; }
+@media (max-width: 760px) {
+  .finance-split-summary { grid-template-columns: 1fr; }
+  .home-photo-item { grid-template-columns: 50px 1fr; }
+  .home-photo-item strong { grid-column: 2; }
+  .home-photo-item small { grid-column: 2; }
+}
+
+.account-category-modal { width: min(860px, 100%); }
+.account-category-modal .mini-section { border: 1px solid var(--line); border-radius: 18px; padding: 14px; background: #f8fafc; }

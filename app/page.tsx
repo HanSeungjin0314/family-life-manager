@@ -467,6 +467,9 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [transactionHistoryScope, setTransactionHistoryScope] = useState<"all" | "shared" | "personal">("all");
   const [transactionHistoryCategory, setTransactionHistoryCategory] = useState("");
   const [transactionHistoryQuery, setTransactionHistoryQuery] = useState("");
+  const [showFinanceAuditModal, setShowFinanceAuditModal] = useState(false);
+  const [showAccountCategoryModal, setShowAccountCategoryModal] = useState(false);
+  const [expenseChartScope, setExpenseChartScope] = useState<"all" | "shared" | "personal">("all");
   const [backupPreview, setBackupPreview] = useState<BackupPayload | null>(null);
   const [backupFileName, setBackupFileName] = useState("");
   const [restoreInputKey, setRestoreInputKey] = useState(0);
@@ -481,7 +484,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [categoryForm, setCategoryForm] = useState({ name: "", type: "expense", color: "#4f46e5" });
   const [accountForm, setAccountForm] = useState({ name: "", account_type: "bank", owner_member_id: "", balance: "0", memo: "" });
   const [budgetForm, setBudgetForm] = useState({ name: "", budget_month: `${thisMonth()}-01`, category_id: "", limit_amount: "0", scope: "shared" });
-  const [transactionForm, setTransactionForm] = useState({
+  const [sharedTransactionForm, setSharedTransactionForm] = useState({
     title: "",
     type: "expense" as "income" | "expense" | "transfer",
     scope: "shared" as "shared" | "personal",
@@ -491,6 +494,18 @@ function FamilyLifeApp({ session }: { session: Session }) {
     account_id: "",
     paid_by_member_id: "",
     settlement_required: true,
+    memo: ""
+  });
+  const [personalTransactionForm, setPersonalTransactionForm] = useState({
+    title: "",
+    type: "expense" as "income" | "expense" | "transfer",
+    scope: "personal" as "shared" | "personal",
+    transaction_date: today(),
+    amount: "0",
+    category_id: "",
+    account_id: "",
+    paid_by_member_id: "",
+    settlement_required: false,
     memo: ""
   });
   const [fixedForm, setFixedForm] = useState({ title: "", scope: "shared" as "shared" | "personal", start_date: today(), next_payment_date: today(), amount: "0", category_id: "", account_id: "", paid_by_member_id: "", repeat_enabled: true, repeat_type: "monthly", repeat_until: "", memo: "" });
@@ -602,7 +617,8 @@ function FamilyLifeApp({ session }: { session: Session }) {
   useEffect(() => {
     const firstMember = members[0]?.id ?? "";
     if (firstMember) {
-      setTransactionForm((prev) => prev.paid_by_member_id ? prev : { ...prev, paid_by_member_id: firstMember });
+      setSharedTransactionForm((prev) => prev.paid_by_member_id ? prev : { ...prev, paid_by_member_id: firstMember });
+      setPersonalTransactionForm((prev) => prev.paid_by_member_id ? prev : { ...prev, paid_by_member_id: firstMember });
       setFixedForm((prev) => prev.paid_by_member_id ? prev : { ...prev, paid_by_member_id: firstMember });
       setTaskForm((prev) => prev.assigned_to_member_id ? prev : { ...prev, assigned_to_member_id: firstMember });
       setShoppingForm((prev) => prev.added_by_member_id ? prev : { ...prev, added_by_member_id: firstMember });
@@ -614,11 +630,22 @@ function FamilyLifeApp({ session }: { session: Session }) {
 
   useEffect(() => {
     const firstAccount = accounts[0]?.id ?? "";
-    if (firstAccount) {
-      setTransactionForm((prev) => prev.account_id ? prev : { ...prev, account_id: firstAccount });
-      setFixedForm((prev) => prev.account_id ? prev : { ...prev, account_id: firstAccount });
-    }
+    if (!firstAccount) return;
+    const validAccountIds = new Set(accounts.map((account) => account.id));
+    const savedSharedAccount = typeof window !== "undefined" ? window.localStorage.getItem("together-life-last-account-shared") ?? window.localStorage.getItem("together-life-last-account") ?? "" : "";
+    const savedPersonalAccount = typeof window !== "undefined" ? window.localStorage.getItem("together-life-last-account-personal") ?? window.localStorage.getItem("together-life-last-account") ?? "" : "";
+    const nextSharedAccount = savedSharedAccount && validAccountIds.has(savedSharedAccount) ? savedSharedAccount : firstAccount;
+    const nextPersonalAccount = savedPersonalAccount && validAccountIds.has(savedPersonalAccount) ? savedPersonalAccount : firstAccount;
+    setSharedTransactionForm((prev) => prev.account_id ? prev : { ...prev, account_id: nextSharedAccount });
+    setPersonalTransactionForm((prev) => prev.account_id ? prev : { ...prev, account_id: nextPersonalAccount });
+    setFixedForm((prev) => prev.account_id ? prev : { ...prev, account_id: nextSharedAccount });
   }, [accounts]);
+
+  const rememberTransactionAccount = (scope: "shared" | "personal", accountId: string) => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(`together-life-last-account-${scope}`, accountId);
+    window.localStorage.setItem("together-life-last-account", accountId);
+  };
 
   useEffect(() => {
     const firstVehicle = vehicles[0]?.id ?? "";
@@ -749,38 +776,41 @@ function FamilyLifeApp({ session }: { session: Session }) {
     return adjustAccountBalance(transaction.account_id, -transactionBalanceDelta(transaction.type, Number(transaction.amount)));
   };
 
-  const addTransaction = async (event: FormEvent) => {
+  const addTransaction = async (event: FormEvent, inputScope: "shared" | "personal") => {
     event.preventDefault();
     if (!supabase || !selectedGroupId || !requireEdit()) return;
-    if (!transactionForm.title.trim()) return;
-    const amount = asNumber(transactionForm.amount);
-    const selectedCategory = categories.find((category) => category.id === transactionForm.category_id);
-    // v20.2: 수입으로 저장했는데 전체 거래내역에서 지출로 표시되는 문제를 막기 위해
-    // 선택한 구분과 카테고리 유형을 함께 확인해서 저장 타입을 확정합니다.
-    const nextType: "income" | "expense" = selectedCategory?.type === "income" || transactionForm.type === "income" ? "income" : "expense";
-    const nextScope = canViewPersonal ? transactionForm.scope : "shared";
-    const nextSettlementRequired = nextType === "expense" && nextScope === "shared" ? transactionForm.settlement_required : false;
+    const form = inputScope === "personal" ? personalTransactionForm : sharedTransactionForm;
+    const setForm = inputScope === "personal" ? setPersonalTransactionForm : setSharedTransactionForm;
+    if (!form.title.trim()) return;
+    const amount = asNumber(form.amount);
+    const selectedCategory = categories.find((category) => category.id === form.category_id);
+    // v24.4: 개인/공동 가계부 입력을 완전히 분리합니다.
+    // 입력 카드 자체가 scope를 결정하므로, 사용자가 공동/개인 선택을 잘못 누를 가능성을 줄입니다.
+    const nextType: "income" | "expense" = selectedCategory?.type === "income" || form.type === "income" ? "income" : "expense";
+    const nextScope: "shared" | "personal" = inputScope === "personal" && canViewPersonal ? "personal" : "shared";
+    const nextSettlementRequired = nextType === "expense" && nextScope === "shared" ? form.settlement_required : false;
     const nextTransaction = {
       group_id: selectedGroupId,
       created_by: currentUserId,
-      title: transactionForm.title.trim(),
+      title: form.title.trim(),
       type: nextType,
       scope: nextScope,
-      transaction_date: transactionForm.transaction_date,
+      transaction_date: form.transaction_date,
       amount,
-      category_id: transactionForm.category_id || null,
-      account_id: transactionForm.account_id || null,
-      paid_by_member_id: transactionForm.paid_by_member_id || null,
+      category_id: form.category_id || null,
+      account_id: form.account_id || null,
+      paid_by_member_id: form.paid_by_member_id || null,
       settlement_required: nextSettlementRequired,
       split_method: nextSettlementRequired ? "equal" : "none",
-      memo: transactionForm.memo || null
+      memo: form.memo || null
     };
     const { error } = await supabase.from("transactions").insert(nextTransaction);
     if (error) return showNotice({ type: "error", text: error.message });
     const balanceError = await applyTransactionToAccount(nextTransaction);
+    rememberTransactionAccount(nextScope, form.account_id || "");
     if (balanceError) showNotice({ type: "error", text: `거래는 저장됐지만 계좌 잔액 반영에 실패했습니다: ${balanceError}` });
-    else showNotice({ type: "success", text: "거래 저장과 계좌 잔액 반영이 완료되었습니다." });
-    setTransactionForm((prev) => ({ ...prev, title: "", amount: "0", memo: "", transaction_date: today() }));
+    else showNotice({ type: "success", text: `${nextScope === "shared" ? "공동" : "개인"} 거래 저장과 계좌 잔액 반영이 완료되었습니다.` });
+    setForm((prev) => ({ ...prev, account_id: form.account_id, title: "", amount: "0", memo: "", transaction_date: today(), category_id: "", settlement_required: nextScope === "shared" }));
     await fetchGroupData(selectedGroupId);
   };
 
@@ -1676,6 +1706,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     });
   }, [anniversaryEvents, selectedMonth]);
   const selectedMonthDiaryEntries = useMemo(() => diaryEntries.filter((item) => item.diary_date?.startsWith(selectedMonth)).slice(0, 8), [diaryEntries, selectedMonth]);
+  const openTasksCount = useMemo(() => tasks.filter((item) => !item.is_done).length, [tasks]);
   const upcomingAnniversaries = useMemo(() => {
     const now = new Date(`${today()}T00:00:00`);
     const currentYear = now.getFullYear();
@@ -1969,12 +2000,15 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       return date.toISOString().slice(0, 7);
     });
     const rows = months.map((month) => {
-      const total = visibleTransactions.filter((item) => isInMonth(item.transaction_date, month) && transactionIsExpense(item)).reduce((sum, item) => sum + moneyNumber(item.amount), 0);
-      return { month, total };
+      const baseTransactions = visibleTransactions.filter((item) => isInMonth(item.transaction_date, month) && transactionIsExpense(item));
+      const sharedTotal = baseTransactions.filter((item) => transactionScopeOf(item) === "shared").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const personalTotal = baseTransactions.filter((item) => transactionScopeOf(item) === "personal").reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const total = expenseChartScope === "shared" ? sharedTotal : expenseChartScope === "personal" ? personalTotal : sharedTotal + personalTotal;
+      return { month, total, sharedTotal, personalTotal };
     });
     const max = Math.max(...rows.map((row) => row.total), 1);
     return rows.map((row) => ({ ...row, percent: Math.max(4, Math.round((row.total / max) * 100)) }));
-  }, [visibleTransactions, selectedMonth]);
+  }, [visibleTransactions, selectedMonth, expenseChartScope]);
 
   if (groups.length === 0) {
     return (
@@ -2051,7 +2085,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
         {activeTab === "home" && (
           <>
-            <section className="summary-grid">
+            <section className="summary-grid home-summary-grid">
               <SummaryCard title="수입" value={currency(summary.income)} tone="green" />
               <SummaryCard title="변동 지출" value={currency(summary.variableExpense)} tone="red" />
               <SummaryCard title="고정비" value={currency(summary.fixedExpense)} tone="orange" />
@@ -2059,11 +2093,22 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <SummaryCard title="공동 지출" value={currency(summary.sharedExpense)} tone="blue" />
               {canViewPersonal && <SummaryCard title="개인 지출" value={currency(summary.personalExpense)} tone="purple" />}
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
-              <SummaryCard title="이번 달 일정" value={`${selectedMonthEvents.length}건`} tone="blue" />
-              <SummaryCard title="이번 달 다이어리" value={`${selectedMonthDiaryEntries.length}건`} tone="purple" />
             </section>
 
             <section className="grid two">
+              <Card title="첫 화면 한눈에 보기" description="첨부해주신 첫 화면 기준으로 내용이 섞이지 않게 핵심 요약만 따로 정리했습니다.">
+                <div className="quick-overview-grid">
+                  <div className="quick-overview-item"><span>이번 달 일정</span><strong>{selectedMonthEvents.length}건</strong></div>
+                  <div className="quick-overview-item"><span>이번 달 기념일</span><strong>{selectedMonthAnniversaries.length}건</strong></div>
+                  <div className="quick-overview-item"><span>이번 달 다이어리</span><strong>{selectedMonthDiaryEntries.length}건</strong></div>
+                  <div className="quick-overview-item"><span>남은 할 일</span><strong>{openTasksCount}건</strong></div>
+                </div>
+                <div className="inline-actions">
+                  <button type="button" className="secondary" onClick={() => setActiveTab("finance")}>가계부 보기</button>
+                  <button type="button" className="secondary" onClick={() => setActiveTab("calendar")}>달력 보기</button>
+                  <button type="button" className="secondary" onClick={() => setActiveTab("diary")}>다이어리 보기</button>
+                </div>
+              </Card>
               <Card title="다가오는 알림" description="일정, 기념일, 고정비, 할 일을 가까운 순서로 보여줍니다.">
                 <List compact>
                   {alertItems.length === 0 && <li><span>앞으로 30일 안에 표시할 알림이 없습니다.</span></li>}
@@ -2074,12 +2119,24 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   ))}
                 </List>
               </Card>
+            </section>
+
+            <section className="grid two">
               <Card title="빠른 검색" description="다이어리, 일정, 거래, 장보기, 할 일을 한 번에 찾습니다.">
                 <div className="stack-form">
                   <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="예: 병원, 데이트, 식비, 여행" maxLength={FIELD_LIMITS.search} />
                   <button type="button" className="secondary" onClick={() => setActiveTab("search")}>검색 화면으로 이동</button>
                   <p className="muted small">검색 결과 {searchResults.length}건</p>
                 </div>
+              </Card>
+              <Card title="공동·개인 가계부 바로가기" description="가계부 탭에서 공동과 개인 내역을 나눠서 보도록 바뀌었습니다.">
+                <div className="quick-overview-grid">
+                  <div className="quick-overview-item"><span>공동 지출</span><strong>{currency(summary.sharedExpense)}</strong></div>
+                  {canViewPersonal && <div className="quick-overview-item"><span>개인 지출</span><strong>{currency(summary.personalExpense)}</strong></div>}
+                  <div className="quick-overview-item"><span>고정비</span><strong>{currency(summary.fixedExpense)}</strong></div>
+                  <div className="quick-overview-item"><span>남은 금액</span><strong>{currency(summary.balance)}</strong></div>
+                </div>
+                <p className="muted small">첫 화면에서는 금액 카드와 기록 요약을 분리해서, 첨부해주신 화면처럼 내용이 한 줄에 뒤섞여 보이지 않도록 정리했습니다.</p>
               </Card>
             </section>
 
@@ -2119,31 +2176,59 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <SummaryCard title="남은 금액" value={currency(summary.balance)} tone="gray" />
             </section>
 
-            <section className="grid two">
-              <Card title="계산 기준 점검" description="v21.2에서 고정한 가계부 카드 계산 기준입니다.">
-                <List compact>{financeAuditRows.map((row) => <li key={row.label}><span>{row.label} · {currency(row.value)} · {row.rule}</span></li>)}</List>
+            <section className="grid">
+              <Card title="계산 기준 점검" description="내용을 펼쳐놓지 않고 버튼을 눌렀을 때만 팝업으로 확인합니다.">
+                <div className="between">
+                  <p className="muted small">수입, 변동지출, 고정비, 공동/개인 지출 계산 기준을 필요할 때만 확인합니다.</p>
+                  <button type="button" className="secondary" onClick={() => setShowFinanceAuditModal(true)}>계산 기준 보기</button>
+                </div>
               </Card>
             </section>
 
-            <section className="grid three">
-              <Card title="공동 가계부" description="수입과 지출을 등록합니다.">
-                <form className="stack-form" onSubmit={addTransaction}>
-                  <input value={transactionForm.title} onChange={(event) => setTransactionForm({ ...transactionForm, title: event.target.value })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} disabled={!canEdit} />
-                  <div className="form-row">
-                    <select value={transactionForm.type} onChange={(event) => setTransactionForm({ ...transactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: event.target.value === "expense" ? transactionForm.settlement_required : false })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
-                    <select value={canViewPersonal ? transactionForm.scope : "shared"} onChange={(event) => setTransactionForm({ ...transactionForm, scope: event.target.value as Transaction["scope"] })} disabled={!canEdit || !canViewPersonal}><option value="shared">공동</option>{canViewPersonal && <option value="personal">개인</option>}</select>
+            <section className="grid">
+              <Card title="계좌·카테고리" description="자주 수정하지 않는 기본 설정은 필요할 때만 팝업으로 열어 관리합니다.">
+                <div className="between">
+                  <div>
+                    <p className="muted small">등록 계좌 {accounts.length}개 · 카테고리 {categories.length}개</p>
+                    <p className="muted small">가계부 화면에서는 목록을 펼치지 않고, 입력/수정이 필요할 때만 관리창을 엽니다.</p>
                   </div>
-                  <div className="form-row"><input type="date" value={transactionForm.transaction_date} onChange={(event) => setTransactionForm({ ...transactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
-                  <select value={transactionForm.account_id} onChange={(event) => setTransactionForm({ ...transactionForm, account_id: event.target.value })} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
-                  <select value={transactionForm.category_id} onChange={(event) => setTransactionForm({ ...transactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === transactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-                  <textarea rows={3} value={transactionForm.memo} onChange={(event) => setTransactionForm({ ...transactionForm, memo: event.target.value })} placeholder="세부내용: 사용처, 메모, 영수증 정보 등을 적어두세요." maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit} />
-                  <select value={transactionForm.paid_by_member_id} onChange={(event) => setTransactionForm({ ...transactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
-                  <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다.</p>
-                  <label className="check-line"><input type="checkbox" checked={transactionForm.settlement_required} onChange={(event) => setTransactionForm({ ...transactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>
-                  <button disabled={!canEdit}>거래 저장</button>
+                  <button type="button" className="secondary" onClick={() => setShowAccountCategoryModal(true)}>계좌·카테고리 관리</button>
+                </div>
+              </Card>
+            </section>
+
+            <section className="grid two">
+              <Card title="개인 가계부 입력" description="본인에게만 보이는 개인 수입·지출을 따로 등록합니다.">
+                <form className="stack-form" onSubmit={(event) => addTransaction(event, "personal")}>
+                  <input value={personalTransactionForm.title} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, title: event.target.value })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} disabled={!canEdit || !canViewPersonal} />
+                  <select value={personalTransactionForm.type} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: false })} disabled={!canEdit || !canViewPersonal}><option value="expense">지출</option><option value="income">수입</option></select>
+                  <div className="form-row"><input type="date" value={personalTransactionForm.transaction_date} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, transaction_date: event.target.value })} disabled={!canEdit || !canViewPersonal} /><input value={personalTransactionForm.amount} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit || !canViewPersonal} /></div>
+                  <select value={personalTransactionForm.account_id} onChange={(event) => { const accountId = event.target.value; rememberTransactionAccount("personal", accountId); setPersonalTransactionForm({ ...personalTransactionForm, account_id: accountId }); }} disabled={!canEdit || !canViewPersonal}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
+                  <select value={personalTransactionForm.category_id} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, category_id: event.target.value })} disabled={!canEdit || !canViewPersonal}><option value="">카테고리</option>{categories.filter((category) => category.type === personalTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <textarea rows={3} value={personalTransactionForm.memo} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, memo: event.target.value })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit || !canViewPersonal} />
+                  <select value={personalTransactionForm.paid_by_member_id} onChange={(event) => setPersonalTransactionForm({ ...personalTransactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit || !canViewPersonal}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+                  <p className="form-help">개인 가계부 입력은 정산 대상에서 자동 제외됩니다.</p>
+                  <button disabled={!canEdit || !canViewPersonal}>개인 거래 저장</button>
                 </form>
               </Card>
 
+              <Card title="공동 가계부 입력" description="둘이 함께 보는 공동 수입·지출을 등록합니다.">
+                <form className="stack-form" onSubmit={(event) => addTransaction(event, "shared")}>
+                  <input value={sharedTransactionForm.title} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, title: event.target.value })} placeholder="내용" maxLength={FIELD_LIMITS.transactionTitle} disabled={!canEdit} />
+                  <select value={sharedTransactionForm.type} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, type: event.target.value as Transaction["type"], category_id: "", settlement_required: event.target.value === "expense" ? sharedTransactionForm.settlement_required : false })} disabled={!canEdit}><option value="expense">지출</option><option value="income">수입</option></select>
+                  <div className="form-row"><input type="date" value={sharedTransactionForm.transaction_date} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, transaction_date: event.target.value })} disabled={!canEdit} /><input value={sharedTransactionForm.amount} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, amount: formatMoneyInput(event.target.value) })} placeholder="금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
+                  <select value={sharedTransactionForm.account_id} onChange={(event) => { const accountId = event.target.value; rememberTransactionAccount("shared", accountId); setSharedTransactionForm({ ...sharedTransactionForm, account_id: accountId }); }} disabled={!canEdit}><option value="">계좌 연동 안 함</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {currency(account.balance)}</option>)}</select>
+                  <select value={sharedTransactionForm.category_id} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === sharedTransactionForm.type).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <textarea rows={3} value={sharedTransactionForm.memo} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, memo: event.target.value })} placeholder="세부내용" maxLength={FIELD_LIMITS.transactionMemo} disabled={!canEdit} />
+                  <select value={sharedTransactionForm.paid_by_member_id} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, paid_by_member_id: event.target.value })} disabled={!canEdit}><option value="">결제자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
+                  {sharedTransactionForm.type === "expense" && <label className="check-line"><input type="checkbox" checked={sharedTransactionForm.settlement_required} onChange={(event) => setSharedTransactionForm({ ...sharedTransactionForm, settlement_required: event.target.checked })} disabled={!canEdit} /> 공동 지출 정산 대상</label>}
+                  <p className="form-help">계좌를 선택하면 수입은 잔액에 더해지고, 지출은 잔액에서 빠집니다.</p>
+                  <button disabled={!canEdit}>공동 거래 저장</button>
+                </form>
+              </Card>
+            </section>
+
+            <section className="grid">
               <Card title="고정비" description="보험, 통신비, 구독료처럼 반복되는 지출입니다.">
                 <form className="stack-form" onSubmit={addFixedExpense}>
                   <input value={fixedForm.title} onChange={(event) => setFixedForm({ ...fixedForm, title: event.target.value })} placeholder="고정비 이름" maxLength={FIELD_LIMITS.fixedTitle} disabled={!canEdit} />
@@ -2155,27 +2240,25 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
                   <button disabled={!canEdit}>고정비 저장</button>
                 </form>
-                <List compact>{visibleFixedExpenses.slice(0, 6).map((item) => <li key={item.id}><span>{item.title} · {fixedScopeOf(item) === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canManageFixedExpense(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id)} disabled={!canManageFixedExpense(item)}>삭제</button></div></li>)}</List>
-              </Card>
-
-              <Card title="계좌·카테고리" description="가계부 기본 설정입니다.">
-                <form className="stack-form" onSubmit={addAccount}>
-                  <input value={accountForm.name} onChange={(event) => setAccountForm({ ...accountForm, name: event.target.value })} placeholder="계좌명" maxLength={FIELD_LIMITS.accountName} disabled={!canAdmin} />
-                  <div className="form-row"><select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })} disabled={!canAdmin}><option value="bank">입출금</option><option value="cash">현금</option><option value="credit_card">신용카드</option><option value="saving">저축</option></select><input value={accountForm.balance} onChange={(event) => setAccountForm({ ...accountForm, balance: formatMoneyInput(event.target.value) })} placeholder="잔액" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
-                  <button className="secondary" disabled={!canAdmin}>계좌 추가</button>
-                </form>
-                <List compact>{accounts.slice(0, 4).map((account) => <li key={account.id}><span>{account.name} · {currency(account.balance)}</span><div className="inline-actions"><button className="text-button" onClick={() => editAccount(account)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
-                <hr />
-                <form className="inline-form" onSubmit={addCategory}>
-                  <input value={categoryForm.name} onChange={(event) => setCategoryForm({ ...categoryForm, name: event.target.value })} placeholder="카테고리" maxLength={FIELD_LIMITS.categoryName} disabled={!canAdmin} />
-                  <select value={categoryForm.type} onChange={(event) => setCategoryForm({ ...categoryForm, type: event.target.value })} disabled={!canAdmin}><option value="expense">지출</option><option value="income">수입</option></select>
-                  <button className="secondary" disabled={!canAdmin}>추가</button>
-                </form>
-                <List compact>{categories.slice(0, 8).map((category) => <li key={category.id}><span>{category.name} · {category.type === "income" ? "수입" : "지출"}</span><div className="inline-actions"><button className="text-button" onClick={() => editCategory(category)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("categories", category.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <p className="muted small gap-top">고정비 목록 {visibleFixedExpenses.length}건 · 아래 목록은 스크롤로 전체 확인/수정할 수 있습니다.</p>
+                <div className="scroll-list fixed-list-scroll">
+                  <List compact>{visibleFixedExpenses.length === 0 && <li><span>등록된 고정비가 없습니다.</span></li>}{visibleFixedExpenses.map((item) => <li key={item.id}><span>{item.title} · {fixedScopeOf(item) === "shared" ? "공동" : "개인"} · {memberName(item.paid_by_member_id)} · {currency(item.amount)} · {fixedRepeatLabel(item.repeat_enabled, item.repeat_type)}{fixedOccurrenceCountInMonth(item, selectedMonth) > 1 ? ` · 이번 달 ${fixedOccurrenceCountInMonth(item, selectedMonth)}회` : ""}{item.repeat_until ? ` · ${item.repeat_until}까지` : ""}</span><div className="inline-actions"><button className="text-button" onClick={() => editFixedExpense(item)} disabled={!canManageFixedExpense(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("fixed_expenses", item.id)} disabled={!canManageFixedExpense(item)}>삭제</button></div></li>)}</List>
+                </div>
               </Card>
             </section>
 
-            <section className="grid two">
+            <section className="grid">
+              <Card title="이번 달 예산" description="월별 예산과 고정비를 관리합니다.">
+                <form className="stack-form" onSubmit={addBudget}>
+                  <input value={budgetForm.name} onChange={(event) => setBudgetForm({ ...budgetForm, name: event.target.value })} placeholder="예산명" maxLength={FIELD_LIMITS.budgetName} disabled={!canAdmin} />
+                  <div className="form-row"><input type="date" value={budgetForm.budget_month} onChange={(event) => setBudgetForm({ ...budgetForm, budget_month: event.target.value })} disabled={!canAdmin} /><input value={budgetForm.limit_amount} onChange={(event) => setBudgetForm({ ...budgetForm, limit_amount: formatMoneyInput(event.target.value) })} placeholder="한도" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
+                  <button className="secondary" disabled={!canAdmin}>예산 추가</button>
+                </form>
+                <List>{monthBudgets.map((budget) => <li key={budget.id}><span>{budget.name} · {currency(budget.limit_amount)}</span><div className="inline-actions"><button className="text-button" onClick={() => editBudget(budget)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("budgets", budget.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+              </Card>
+            </section>
+
+            <section className="grid">
               <Card title="정산 관리" description="공동 지출을 1/N 기준으로 계산하고 완료 처리합니다.">
                 <div className="settlement-list">
                   {settlementBalances.map(({ member, balance }) => <div className="settlement-row" key={member.id}><span>{member.display_name}</span><strong className={balance > 0 ? "positive" : balance < 0 ? "negative" : ""}>{balance > 0 ? `받을 금액 ${currency(balance)}` : balance < 0 ? `보낼 금액 ${currency(Math.abs(balance))}` : "정산 완료"}</strong></div>)}
@@ -2199,46 +2282,10 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   })}
                 </List>
               </Card>
-
-              <Card title="이번 달 예산" description="월별 예산과 고정비를 관리합니다.">
-                <form className="stack-form" onSubmit={addBudget}>
-                  <input value={budgetForm.name} onChange={(event) => setBudgetForm({ ...budgetForm, name: event.target.value })} placeholder="예산명" maxLength={FIELD_LIMITS.budgetName} disabled={!canAdmin} />
-                  <div className="form-row"><input type="date" value={budgetForm.budget_month} onChange={(event) => setBudgetForm({ ...budgetForm, budget_month: event.target.value })} disabled={!canAdmin} /><input value={budgetForm.limit_amount} onChange={(event) => setBudgetForm({ ...budgetForm, limit_amount: formatMoneyInput(event.target.value) })} placeholder="한도" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
-                  <button className="secondary" disabled={!canAdmin}>예산 추가</button>
-                </form>
-                <List>{monthBudgets.map((budget) => <li key={budget.id}><span>{budget.name} · {currency(budget.limit_amount)}</span><div className="inline-actions"><button className="text-button" onClick={() => editBudget(budget)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("budgets", budget.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
-              </Card>
-            </section>
-
-            <section className="grid two">
-              <Card title={`${monthLabel(selectedMonth)} 지출 차트`} description="최근 6개월 지출 추이입니다.">
-                <div className="bar-chart">{monthlyChart.map((row) => <div className="bar-row" key={row.month}><span>{row.month.slice(5)}월</span><div><i style={{ width: `${row.percent}%` }} /></div><strong>{currency(row.total)}</strong></div>)}</div>
-              </Card>
-              <Card title="카테고리별 지출" description="이번 달 지출 비율입니다.">
-                <div className="category-list">{categoryStats.length === 0 && <p className="muted">아직 지출 내역이 없습니다.</p>}{categoryStats.map(({ category, total, percent }) => <div className="category-item" key={category.id}><div className="between"><strong>{category.name}</strong><span>{currency(total)} · {percent}%</span></div><div className="progress"><span style={{ width: `${percent}%`, background: category.color ?? "#4f46e5" }} /></div></div>)}</div>
-              </Card>
-            </section>
-
-            <section className="grid two">
-              <Card title="최근 거래내역" description="최근 5건만 빠르게 확인합니다.">
-                <div className="table-wrap"><table><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>세부내용</th><th>연동계좌</th><th>결제자</th><th>카테고리</th><th>금액</th><th></th></tr></thead><tbody>{visibleTransactions.slice(0, 5).map((item) => <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>)}</tbody></table></div>
-              </Card>
-              <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
-                <form className="stack-form" onSubmit={addGoal}>
-                  <input value={goalForm.title} onChange={(event) => setGoalForm({ ...goalForm, title: event.target.value })} placeholder="목표명" maxLength={FIELD_LIMITS.goalTitle} disabled={!canEdit} />
-                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: formatMoneyInput(event.target.value) })} placeholder="현재금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: formatMoneyInput(event.target.value) })} placeholder="목표금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
-                  <button disabled={!canEdit}>목표 추가</button>
-                </form>
-                <div className="goal-list">
-                  {goals.slice(0, 5).map((goal) => {
-                    const percent = goal.target_amount > 0 ? Math.min(100, Math.round((Number(goal.current_amount) / Number(goal.target_amount)) * 100)) : 0;
-                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><div className="inline-actions"><button className="text-button" onClick={() => editGoal(goal)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
-                  })}
-                </div>
-              </Card>
             </section>
 
             <section className="grid">
+              <div id="transaction-history" />
               <Card title="전체 거래내역" description="기존 입력 내역을 기간, 유형, 범위, 카테고리, 검색어로 확인합니다.">
                 <div className="history-filter">
                   <select value={transactionHistoryPeriod} onChange={(event) => setTransactionHistoryPeriod(event.target.value as "month" | "all")}>
@@ -2269,6 +2316,40 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                     <tr key={item.id}><td>{item.transaction_date}</td><td>{transactionTypeLabel(item)} · {scopeLabel(item)}</td><td>{item.title}</td><td className="memo-cell">{item.memo || "-"}</td><td>{accountName(item.account_id)}</td><td>{memberName(item.paid_by_member_id)}</td><td>{categoryName(item.category_id)}</td><td className="right">{currency(item.amount)}</td><td><div className="inline-actions"><button className="text-button" onClick={() => editTransaction(item)} disabled={!canManageTransaction(item)}>수정</button><button className="text-button danger-text" onClick={() => removeRow("transactions", item.id)} disabled={!canManageTransaction(item)}>삭제</button></div></td></tr>
                   ))}
                 </tbody></table></div>
+              </Card>
+            </section>
+
+            <section className="grid">
+              <Card title={`${monthLabel(selectedMonth)} 지출 차트`} description="최근 6개월 지출 추이를 전체·공동·개인으로 나눠 확인합니다.">
+                <div className="chart-filter-row">
+                  <button type="button" className={`pill-button ${expenseChartScope === "all" ? "active" : ""}`} onClick={() => setExpenseChartScope("all")}>전체</button>
+                  <button type="button" className={`pill-button ${expenseChartScope === "shared" ? "active" : ""}`} onClick={() => setExpenseChartScope("shared")}>공동</button>
+                  {canViewPersonal && <button type="button" className={`pill-button ${expenseChartScope === "personal" ? "active" : ""}`} onClick={() => setExpenseChartScope("personal")}>개인</button>}
+                </div>
+                <div className="bar-chart">{monthlyChart.map((row) => <div className="bar-row" key={row.month}><span>{row.month.slice(5)}월</span><div><i style={{ width: `${row.percent}%` }} /></div><strong>{currency(row.total)}</strong></div>)}</div>
+                <p className="muted small">현재 차트 기준: {expenseChartScope === "shared" ? "공동 지출" : expenseChartScope === "personal" ? "개인 지출" : "전체 지출"}</p>
+              </Card>
+            </section>
+
+            <section className="grid">
+              <Card title="카테고리별 지출" description="이번 달 지출 비율입니다.">
+                <div className="category-list">{categoryStats.length === 0 && <p className="muted">아직 지출 내역이 없습니다.</p>}{categoryStats.map(({ category, total, percent }) => <div className="category-item" key={category.id}><div className="between"><strong>{category.name}</strong><span>{currency(total)} · {percent}%</span></div><div className="progress"><span style={{ width: `${percent}%`, background: category.color ?? "#4f46e5" }} /></div></div>)}</div>
+              </Card>
+            </section>
+
+            <section className="grid">
+              <Card title="공동 목표" description="여행, 이사, 결혼, 비상금 등 목표를 관리합니다.">
+                <form className="stack-form" onSubmit={addGoal}>
+                  <input value={goalForm.title} onChange={(event) => setGoalForm({ ...goalForm, title: event.target.value })} placeholder="목표명" maxLength={FIELD_LIMITS.goalTitle} disabled={!canEdit} />
+                  <div className="form-row"><input value={goalForm.current_amount} onChange={(event) => setGoalForm({ ...goalForm, current_amount: formatMoneyInput(event.target.value) })} placeholder="현재금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /><input value={goalForm.target_amount} onChange={(event) => setGoalForm({ ...goalForm, target_amount: formatMoneyInput(event.target.value) })} placeholder="목표금액" maxLength={FIELD_LIMITS.money} disabled={!canEdit} /></div>
+                  <button disabled={!canEdit}>목표 추가</button>
+                </form>
+                <div className="goal-list">
+                  {goals.slice(0, 5).map((goal) => {
+                    const percent = goal.target_amount > 0 ? Math.min(100, Math.round((Number(goal.current_amount) / Number(goal.target_amount)) * 100)) : 0;
+                    return <div className="goal-item" key={goal.id}><div className="between"><strong>{goal.title}</strong><div className="inline-actions"><button className="text-button" onClick={() => editGoal(goal)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("goals", goal.id)} disabled={!canEdit}>삭제</button></div></div><div className="progress"><span style={{ width: `${percent}%` }} /></div><small>{currency(goal.current_amount)} / {currency(goal.target_amount)} · {percent}%</small></div>;
+                  })}
+                </div>
               </Card>
             </section>
           </>
@@ -2713,6 +2794,45 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
           </>
         )}
 
+
+        {showFinanceAuditModal && (
+          <div className="modal-backdrop">
+            <div className="modal-card stack-form">
+              <div className="between"><h3>계산 기준 점검</h3><button type="button" className="text-button" onClick={() => setShowFinanceAuditModal(false)}>닫기</button></div>
+              <p className="muted small">v21.2에서 고정한 가계부 카드 계산 기준입니다.</p>
+              <List compact>{financeAuditRows.map((row) => <li key={row.label}><span>{row.label} · {currency(row.value)} · {row.rule}</span></li>)}</List>
+              <button type="button" className="secondary" onClick={() => setShowFinanceAuditModal(false)}>확인</button>
+            </div>
+          </div>
+        )}
+
+        {showAccountCategoryModal && (
+          <div className="modal-backdrop">
+            <div className="modal-card stack-form account-category-modal">
+              <div className="between"><h3>계좌·카테고리 관리</h3><button type="button" className="text-button" onClick={() => setShowAccountCategoryModal(false)}>닫기</button></div>
+              <p className="muted small">계좌와 카테고리는 자주 수정하지 않는 기본 설정이라 팝업 안에서만 관리합니다.</p>
+              <section className="mini-section">
+                <h4>계좌</h4>
+                <form className="stack-form" onSubmit={addAccount}>
+                  <input value={accountForm.name} onChange={(event) => setAccountForm({ ...accountForm, name: event.target.value })} placeholder="계좌명" maxLength={FIELD_LIMITS.accountName} disabled={!canAdmin} />
+                  <div className="form-row"><select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })} disabled={!canAdmin}><option value="bank">입출금</option><option value="cash">현금</option><option value="credit_card">신용카드</option><option value="saving">저축</option></select><input value={accountForm.balance} onChange={(event) => setAccountForm({ ...accountForm, balance: formatMoneyInput(event.target.value) })} placeholder="잔액" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
+                  <button className="secondary" disabled={!canAdmin}>계좌 추가</button>
+                </form>
+                <List compact>{accounts.length === 0 && <li><span>등록된 계좌가 없습니다.</span></li>}{accounts.map((account) => <li key={account.id}><span>{account.name} · {currency(account.balance)}</span><div className="inline-actions"><button className="text-button" onClick={() => editAccount(account)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+              </section>
+              <section className="mini-section">
+                <h4>카테고리</h4>
+                <form className="inline-form" onSubmit={addCategory}>
+                  <input value={categoryForm.name} onChange={(event) => setCategoryForm({ ...categoryForm, name: event.target.value })} placeholder="카테고리" maxLength={FIELD_LIMITS.categoryName} disabled={!canAdmin} />
+                  <select value={categoryForm.type} onChange={(event) => setCategoryForm({ ...categoryForm, type: event.target.value })} disabled={!canAdmin}><option value="expense">지출</option><option value="income">수입</option></select>
+                  <button className="secondary" disabled={!canAdmin}>추가</button>
+                </form>
+                <List compact>{categories.length === 0 && <li><span>등록된 카테고리가 없습니다.</span></li>}{categories.map((category) => <li key={category.id}><span>{category.name} · {category.type === "income" ? "수입" : "지출"}</span><div className="inline-actions"><button className="text-button" onClick={() => editCategory(category)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("categories", category.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+              </section>
+              <button type="button" className="secondary" onClick={() => setShowAccountCategoryModal(false)}>닫기</button>
+            </div>
+          </div>
+        )}
 
         {transactionEdit && (
           <div className="modal-backdrop">
