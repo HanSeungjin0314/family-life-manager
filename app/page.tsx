@@ -157,6 +157,84 @@ const formatMoneyInput = (value: string) => {
 const monthLabel = (month: string) => month.replace("-", "년 ") + "월";
 const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
 const daysBetween = (from: string, to: string) => Math.ceil((new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86400000);
+const KOREA_HOLIDAY_OVERRIDES: Record<string, string> = {
+  "2025-01-01": "신정",
+  "2025-01-28": "설날 연휴",
+  "2025-01-29": "설날",
+  "2025-01-30": "설날 연휴",
+  "2025-03-01": "삼일절",
+  "2025-03-03": "삼일절 대체공휴일",
+  "2025-05-05": "어린이날 · 부처님오신날",
+  "2025-05-06": "대체공휴일",
+  "2025-06-06": "현충일",
+  "2025-08-15": "광복절",
+  "2025-10-03": "개천절",
+  "2025-10-05": "추석 연휴",
+  "2025-10-06": "추석",
+  "2025-10-07": "추석 연휴",
+  "2025-10-08": "추석 대체공휴일",
+  "2025-10-09": "한글날",
+  "2025-12-25": "성탄절",
+  "2026-01-01": "신정",
+  "2026-02-16": "설날 연휴",
+  "2026-02-17": "설날",
+  "2026-02-18": "설날 연휴",
+  "2026-03-01": "삼일절",
+  "2026-03-02": "삼일절 대체공휴일",
+  "2026-05-05": "어린이날",
+  "2026-05-24": "부처님오신날",
+  "2026-05-25": "부처님오신날 대체공휴일",
+  "2026-06-06": "현충일",
+  "2026-08-15": "광복절",
+  "2026-08-17": "광복절 대체공휴일",
+  "2026-09-24": "추석 연휴",
+  "2026-09-25": "추석",
+  "2026-09-26": "추석 연휴",
+  "2026-10-03": "개천절",
+  "2026-10-05": "개천절 대체공휴일",
+  "2026-10-09": "한글날",
+  "2026-12-25": "성탄절",
+  "2027-01-01": "신정",
+  "2027-02-06": "설날 연휴",
+  "2027-02-07": "설날",
+  "2027-02-08": "설날 연휴",
+  "2027-02-09": "설날 대체공휴일",
+  "2027-03-01": "삼일절",
+  "2027-05-05": "어린이날",
+  "2027-05-13": "부처님오신날",
+  "2027-06-06": "현충일",
+  "2027-08-15": "광복절",
+  "2027-08-16": "광복절 대체공휴일",
+  "2027-09-14": "추석 연휴",
+  "2027-09-15": "추석",
+  "2027-09-16": "추석 연휴",
+  "2027-10-03": "개천절",
+  "2027-10-04": "개천절 대체공휴일",
+  "2027-10-09": "한글날",
+  "2027-10-11": "한글날 대체공휴일",
+  "2027-12-25": "성탄절",
+  "2027-12-27": "성탄절 대체공휴일"
+};
+const koreaSolarHolidayName = (date: string) => {
+  const monthDay = date.slice(5, 10);
+  if (monthDay === "01-01") return "신정";
+  if (monthDay === "03-01") return "삼일절";
+  if (monthDay === "05-05") return "어린이날";
+  if (monthDay === "06-06") return "현충일";
+  if (monthDay === "08-15") return "광복절";
+  if (monthDay === "10-03") return "개천절";
+  if (monthDay === "10-09") return "한글날";
+  if (monthDay === "12-25") return "성탄절";
+  return "";
+};
+const koreaHolidayName = (date: string) => KOREA_HOLIDAY_OVERRIDES[date] || koreaSolarHolidayName(date);
+const dayTypeOfDate = (date: string | null) => {
+  if (!date) return "blank";
+  const day = new Date(`${date}T00:00:00`).getDay();
+  if (day === 0) return "sunday";
+  if (day === 6) return "saturday";
+  return "weekday";
+};
 const nextDateForRepeat = (baseDate: string | null | undefined, repeatType: string | null | undefined, fromDate = today()) => {
   if (!baseDate) return null;
   const from = new Date(`${fromDate}T00:00:00`);
@@ -1696,6 +1774,9 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
   const selectedMonthEvents = useMemo(() => {
     return calendarEvents.flatMap((item) => eventOccurrenceDatesInMonth(item, selectedMonth).map((occurrence_date) => ({ ...item, occurrence_date })));
   }, [calendarEvents, selectedMonth]);
+  const selectedMonthAllEvents = useMemo(() => {
+    return [...selectedMonthEvents].sort((a, b) => `${a.occurrence_date ?? a.event_date}${a.event_time ?? ""}`.localeCompare(`${b.occurrence_date ?? b.event_date}${b.event_time ?? ""}`));
+  }, [selectedMonthEvents]);
   const selectedMonthAnniversaries = useMemo(() => {
     const monthEnd = new Date(new Date(`${selectedMonth}-01T00:00:00`).getFullYear(), new Date(`${selectedMonth}-01T00:00:00`).getMonth() + 1, 0);
     return anniversaryEvents.filter((item) => {
@@ -1781,19 +1862,22 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     const firstDay = new Date(`${selectedMonth}-01T00:00:00`);
     const daysInMonth = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0).getDate();
     const blanks = firstDay.getDay();
-    const cells: Array<{ date: string | null; day: number | null; events: Array<CalendarEvent & { occurrence_date?: string }>; anniversaries: AnniversaryEvent[]; diaries: DiaryEntry[] }> = [];
-    for (let i = 0; i < blanks; i += 1) cells.push({ date: null, day: null, events: [], anniversaries: [], diaries: [] });
+    const cells: Array<{ date: string | null; day: number | null; dayType: string; holiday: string; events: Array<CalendarEvent & { occurrence_date?: string }>; anniversaries: AnniversaryEvent[]; diaries: DiaryEntry[] }> = [];
+    for (let i = 0; i < blanks; i += 1) cells.push({ date: null, day: null, dayType: "blank", holiday: "", events: [], anniversaries: [], diaries: [] });
     for (let dayNum = 1; dayNum <= daysInMonth; dayNum += 1) {
       const date = `${selectedMonth}-${String(dayNum).padStart(2, "0")}`;
+      const holiday = koreaHolidayName(date);
       cells.push({
         date,
         day: dayNum,
+        dayType: dayTypeOfDate(date),
+        holiday,
         events: selectedMonthEvents.filter((item) => item.occurrence_date === date),
         anniversaries: selectedMonthAnniversaries.filter((item) => item.anniversary_date.slice(5, 10) === date.slice(5, 10)),
         diaries: diaryEntries.filter((item) => item.diary_date === date)
       });
     }
-    while (cells.length % 7 !== 0) cells.push({ date: null, day: null, events: [], anniversaries: [], diaries: [] });
+    while (cells.length % 7 !== 0) cells.push({ date: null, day: null, dayType: "blank", holiday: "", events: [], anniversaries: [], diaries: [] });
     return cells;
   }, [selectedMonth, selectedMonthEvents, selectedMonthAnniversaries, diaryEntries]);
 
@@ -2142,13 +2226,14 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
 
             <section className="grid two">
               <Card title={`${monthLabel(selectedMonth)} 공유 달력`} description="일정, 기념일, 다이어리 작성일을 함께 봅니다.">
-                <div className="calendar-weekdays"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+                <div className="calendar-weekdays"><span className="sunday-text">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span className="saturday-text">토</span></div>
                 <div className="calendar-grid">
                   {calendarGrid.map((cell, index) => (
-                    <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""}`}>
+                    <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""} ${cell.dayType} ${cell.holiday ? "holiday" : ""}`}>
                       {cell.day && <strong>{cell.day}</strong>}
+                      {cell.holiday && <small className="cal-pill holiday">휴무 · {cell.holiday}</small>}
                       {cell.anniversaries.slice(0, 2).map((anniversary) => <small className="cal-pill anniversary" key={anniversary.id}>🎉 {anniversary.title}</small>)}
-                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
+                      {cell.events.slice(0, 2).map((event) => <button type="button" className="cal-pill event event-button" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined} onClick={() => editCalendarEvent(event)} disabled={!canEdit}>{event.is_important ? "⭐" : "📌"} {event.title}</button>)}
                       {cell.diaries.slice(0, 1).map((diary) => <small className="cal-pill diary" key={diary.id}>📓 {diary.title}</small>)}
                     </div>
                   ))}
@@ -2391,20 +2476,22 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
           <>
             <section className="grid two">
               <Card title={`${monthLabel(selectedMonth)} 공유 달력`} description="일정, 기념일, 다이어리 작성일을 월간 달력으로 함께 봅니다.">
-                <div className="calendar-weekdays"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+                <div className="calendar-weekdays"><span className="sunday-text">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span className="saturday-text">토</span></div>
                 <div className="calendar-grid">
                   {calendarGrid.map((cell, index) => (
-                    <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""}`}>
+                    <div key={`${cell.date ?? "blank"}-${index}`} className={`calendar-cell ${cell.date === today() ? "today" : ""} ${!cell.date ? "blank" : ""} ${cell.dayType} ${cell.holiday ? "holiday" : ""}`}>
                       {cell.day && <strong>{cell.day}</strong>}
+                      {cell.holiday && <small className="cal-pill holiday">휴무 · {cell.holiday}</small>}
                       {cell.anniversaries.slice(0, 2).map((anniversary) => <small className="cal-pill anniversary" key={anniversary.id}>🎉 {anniversary.title}</small>)}
-                      {cell.events.slice(0, 2).map((event) => <small className="cal-pill event" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined}>{event.is_important ? "⭐" : "📌"} {event.title}</small>)}
+                      {cell.events.slice(0, 2).map((event) => <button type="button" className="cal-pill event event-button" key={`${event.id}-${event.occurrence_date ?? event.event_date}`} title={event.memo ?? undefined} onClick={() => editCalendarEvent(event)} disabled={!canEdit}>{event.is_important ? "⭐" : "📌"} {event.title}</button>)}
                       {cell.diaries.slice(0, 1).map((diary) => <small className="cal-pill diary" key={diary.id}>📓 {diary.title}</small>)}
                     </div>
                   ))}
                 </div>
               </Card>
 
-              <Card title="다가오는 일정·기념일" description="가까운 일정과 반복 기념일을 빠르게 확인합니다.">
+              <Card title="일정·기념일 관리" description="지난 일정도 포함해 이번 달 일정을 수정할 수 있습니다.">
+                <div className="mini-section"><h4>이번 달 전체 일정</h4><List compact>{selectedMonthAllEvents.length === 0 && <li><span>이번 달 등록된 일정이 없습니다.</span></li>}{selectedMonthAllEvents.map((event) => <li key={`${event.id}-${event.occurrence_date ?? event.event_date}`}><span>{event.occurrence_date ?? event.event_date} {event.event_time ?? ""} · {(event.occurrence_date ?? event.event_date) < today() ? "지난 일정 · " : ""}{event.is_important ? "⭐ " : ""}{event.title} · {eventRepeatLabel(event.repeat_type)}{event.repeat_until ? ` · ${event.repeat_until}까지` : ""}{event.memo ? <em className="item-memo">메모: {event.memo}</em> : null}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
                 <div className="mini-section"><h4>다가오는 일정</h4><List compact>{upcomingEvents.length === 0 && <li><span>등록된 일정이 없습니다.</span></li>}{upcomingEvents.map((event) => <li key={event.id}><span>{event.occurrence_date ?? event.event_date} {event.event_time ?? ""} · {event.is_important ? "⭐ " : ""}{event.title} · {eventRepeatLabel(event.repeat_type)}{event.repeat_until ? ` · ${event.repeat_until}까지` : ""}{event.memo ? <em className="item-memo">메모: {event.memo}</em> : null}</span><div className="inline-actions"><button className="text-button" onClick={() => editCalendarEvent(event)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("calendar_events", event.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
                 <div className="mini-section"><h4>다가오는 기념일</h4><List compact>{upcomingAnniversaries.length === 0 && <li><span>등록된 기념일이 없습니다.</span></li>}{upcomingAnniversaries.map((anniversary) => <li key={anniversary.id}><span>{anniversary.next_date} · D-{anniversary.diffDays} · {anniversary.title}</span><div className="inline-actions"><button className="text-button" onClick={() => editAnniversary(anniversary)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("anniversary_events", anniversary.id)} disabled={!canEdit}>삭제</button></div></li>)}</List></div>
               </Card>
