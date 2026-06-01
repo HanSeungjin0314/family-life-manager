@@ -68,6 +68,17 @@ type SettlementRecord = {
   completed_at: string | null;
 };
 
+type CreditCardSettlement = {
+  id: string;
+  group_id: string;
+  account_id: string;
+  settlement_month: string;
+  amount: number;
+  settled_by: string | null;
+  memo: string | null;
+  created_at?: string;
+};
+
 type Vehicle = { id: string; group_id: string; name: string; plate_number: string | null; current_km: number; insurance_due_date?: string | null; inspection_due_date?: string | null; tax_due_date?: string | null; memo: string | null; created_at?: string };
 type VehicleMaintenanceItem = { id: string; group_id: string; vehicle_id: string; item_name: string; interval_km: number; last_service_km: number; last_service_date: string | null; memo: string | null; created_at?: string };
 type PlaceRecord = { id: string; group_id: string; name: string; place_type: string; visit_date: string | null; address: string | null; google_maps_url: string | null; rating: number | null; price_range?: string | null; parking_available?: boolean | null; revisit_intent?: string | null; tags?: string | null; memo: string | null; created_at?: string };
@@ -271,16 +282,21 @@ const fixedRepeatLabel = (repeatEnabled: boolean | null | undefined, repeatType:
 const fixedOccurrenceInMonth = (item: Pick<FixedExpense, "is_active" | "start_date" | "next_payment_date" | "repeat_type" | "repeat_enabled" | "repeat_until">, month: string) => {
   if (!item.is_active) return null;
   const baseDate = item.next_payment_date || item.start_date;
-  if (!baseDate) return null;
+  const startDate = item.start_date || baseDate;
+  if (!baseDate || !startDate) return null;
   const repeatEnabled = Boolean(item.repeat_enabled) && item.repeat_type !== "none" && item.repeat_type !== "once";
   const monthStartDate = `${month}-01`;
   const monthEnd = dateOnly(new Date(new Date(`${month}-01T00:00:00`).getFullYear(), new Date(`${month}-01T00:00:00`).getMonth() + 1, 0));
   if (!repeatEnabled) return baseDate.startsWith(month) ? baseDate : null;
+  if (monthEnd < startDate) return null;
   if (item.repeat_until && monthStartDate > item.repeat_until) return null;
   const base = new Date(`${baseDate}T00:00:00`);
   const target = new Date(`${month}-01T00:00:00`);
   let occurrence: string | null = null;
-  if (item.repeat_type === "monthly") {
+  if (month === startDate.slice(0, 7) && startDate < baseDate) {
+    // v25: 고정비는 실제 결제 예정일이 다음 달이어도, 저장/적용 시작한 달부터 요약에 즉시 반영합니다.
+    occurrence = startDate;
+  } else if (item.repeat_type === "monthly") {
     const day = Math.min(base.getDate(), lastDayOfMonth(target.getFullYear(), target.getMonth()));
     occurrence = dateOnly(new Date(target.getFullYear(), target.getMonth(), day));
   } else if (item.repeat_type === "yearly") {
@@ -291,7 +307,7 @@ const fixedOccurrenceInMonth = (item: Pick<FixedExpense, "is_active" | "start_da
     occurrence = nextDateForRepeat(baseDate, item.repeat_type, monthStartDate);
     if (!occurrence || occurrence > monthEnd) return null;
   }
-  if (!occurrence || occurrence < baseDate) return null;
+  if (!occurrence || occurrence < startDate) return null;
   if (isAfterEndDate(occurrence, item.repeat_until)) return null;
   return occurrence;
 };
@@ -356,6 +372,15 @@ const MAX_DIARY_PHOTO_SIZE_MB = 5;
 const MAX_DIARY_PHOTO_SIZE = MAX_DIARY_PHOTO_SIZE_MB * 1024 * 1024;
 const googleMapsSearchUrl = (query: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 const mapsUrlForPlace = (place: Pick<PlaceRecord, "name" | "address" | "google_maps_url">) => place.google_maps_url || googleMapsSearchUrl([place.name, place.address].filter(Boolean).join(" "));
+const normalizePlaceRating = (value: unknown) => Math.max(0, Math.min(5, Math.round(Number(value ?? 0) * 2) / 2));
+const placeRatingOptions = Array.from({ length: 11 }, (_item, index) => index / 2);
+const placeRatingLabel = (value: unknown) => {
+  const rating = normalizePlaceRating(value);
+  const full = Math.floor(rating);
+  const half = rating % 1 === 0.5;
+  return `${"★".repeat(full)}${half ? "½" : ""}${"☆".repeat(Math.max(0, 5 - full - (half ? 1 : 0)))} ${rating.toFixed(1)}`;
+};
+const revisitIntentLabel = (value?: string | null) => value === "possible" ? "가능" : value === "impossible" ? "불가능" : "미선택";
 const dDayLabel = (dateValue?: string | null) => {
   if (!dateValue) return "미등록";
   const diff = daysBetween(today(), dateValue);
@@ -395,6 +420,7 @@ const backupTableLabels: Record<string, string> = {
   diary_entries: "다이어리",
   diary_photos: "다이어리 사진 정보",
   settlement_records: "정산 기록",
+  credit_card_settlements: "신용카드 월 정산",
   vehicles: "차량",
   vehicle_maintenance_items: "차량 관리품목",
   place_records: "맛집/장소 기록"
@@ -415,6 +441,7 @@ const restoreOrder = [
   "diary_entries",
   "diary_photos",
   "settlement_records",
+  "credit_card_settlements",
   "vehicles",
   "vehicle_maintenance_items",
   "place_records",
@@ -534,6 +561,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
   const [diaryPhotos, setDiaryPhotos] = useState<DiaryPhoto[]>([]);
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
+  const [creditCardSettlements, setCreditCardSettlements] = useState<CreditCardSettlement[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicleMaintenanceItems, setVehicleMaintenanceItems] = useState<VehicleMaintenanceItem[]>([]);
   const [placeRecords, setPlaceRecords] = useState<PlaceRecord[]>([]);
@@ -597,11 +625,12 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const [photoInputKey, setPhotoInputKey] = useState(0);
   const [vehicleForm, setVehicleForm] = useState({ name: "", plate_number: "", current_km: "0", insurance_due_date: "", inspection_due_date: "", tax_due_date: "", memo: "" });
   const [maintenanceForm, setMaintenanceForm] = useState({ vehicle_id: "", item_name: "엔진오일", interval_km: "10000", last_service_km: "0", last_service_date: today(), memo: "" });
-  const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", price_range: "", parking_available: false, revisit_intent: "", tags: "", memo: "" });
+  const [placeForm, setPlaceForm] = useState({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", parking_available: false, revisit_intent: "possible", tags: "", memo: "" });
 
   const [transactionEdit, setTransactionEdit] = useState<null | { item: Transaction; type: "income" | "expense"; scope: "shared" | "personal"; title: string; amount: string; transaction_date: string; account_id: string; category_id: string; paid_by_member_id: string; settlement_required: boolean; memo: string }>(null);
   const [fixedEdit, setFixedEdit] = useState<null | { item: FixedExpense; title: string; scope: "shared" | "personal"; amount: string; next_payment_date: string; category_id: string; account_id: string; paid_by_member_id: string; repeat_enabled: boolean; repeat_type: string; repeat_until: string; memo: string }>(null);
   const [eventEdit, setEventEdit] = useState<null | { item: CalendarEvent; title: string; event_date: string; event_time: string; assigned_to_member_id: string; event_type: string; repeat_type: string; repeat_until: string; is_important: boolean; memo: string }>(null);
+  const [placeEdit, setPlaceEdit] = useState<null | { item: PlaceRecord; name: string; place_type: string; visit_date: string; address: string; google_maps_url: string; rating: string; parking_available: boolean; revisit_intent: string; tags: string; memo: string }>(null);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const currentMember = members.find((member) => member.user_id === currentUserId) ?? null;
@@ -647,7 +676,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
   const fetchGroupData = async (groupId: string) => {
     if (!supabase || !groupId) return;
     setLoading(true);
-    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes] = await Promise.all([
+    const [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, creditCardSettlementRes, vehicleRes, maintenanceRes, placeRes] = await Promise.all([
       supabase.from("group_members").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: true }),
       supabase.from("group_invites").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
       supabase.from("categories").select("*").eq("group_id", groupId).is("deleted_at", null).order("sort_order", { ascending: true }),
@@ -663,12 +692,13 @@ function FamilyLifeApp({ session }: { session: Session }) {
       supabase.from("diary_entries").select("*").eq("group_id", groupId).is("deleted_at", null).order("diary_date", { ascending: false }),
       supabase.from("diary_photos").select("*").eq("group_id", groupId).is("deleted_at", null).order("sort_order", { ascending: true }),
       supabase.from("settlement_records").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
+      supabase.from("credit_card_settlements").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
       supabase.from("vehicles").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
       supabase.from("vehicle_maintenance_items").select("*").eq("group_id", groupId).is("deleted_at", null).order("created_at", { ascending: false }),
       supabase.from("place_records").select("*").eq("group_id", groupId).is("deleted_at", null).order("visit_date", { ascending: false })
     ]);
     setLoading(false);
-    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, vehicleRes, maintenanceRes, placeRes].find((res) => res.error)?.error;
+    const firstError = [memberRes, inviteRes, categoryRes, accountRes, budgetRes, transactionRes, fixedRes, taskRes, shoppingRes, goalRes, eventRes, anniversaryRes, diaryRes, diaryPhotoRes, settlementRes, creditCardSettlementRes, vehicleRes, maintenanceRes, placeRes].find((res) => res.error)?.error;
     if (firstError) return showNotice({ type: "error", text: firstError.message });
     setMembers((memberRes.data ?? []) as GroupMember[]);
     setInvites((inviteRes.data ?? []) as GroupInvite[]);
@@ -685,6 +715,7 @@ function FamilyLifeApp({ session }: { session: Session }) {
     setDiaryEntries((diaryRes.data ?? []) as DiaryEntry[]);
     setDiaryPhotos((diaryPhotoRes.data ?? []) as DiaryPhoto[]);
     setSettlementRecords((settlementRes.data ?? []) as SettlementRecord[]);
+    setCreditCardSettlements((creditCardSettlementRes.data ?? []) as CreditCardSettlement[]);
     setVehicles((vehicleRes.data ?? []) as Vehicle[]);
     setVehicleMaintenanceItems((maintenanceRes.data ?? []) as VehicleMaintenanceItem[]);
     setPlaceRecords((placeRes.data ?? []) as PlaceRecord[]);
@@ -1078,59 +1109,54 @@ function FamilyLifeApp({ session }: { session: Session }) {
       visit_date: placeForm.visit_date || null,
       address: placeForm.address.trim() || null,
       google_maps_url: placeForm.google_maps_url.trim() || null,
-      rating: Math.max(0, Math.min(5, asNumber(placeForm.rating))),
-      price_range: placeForm.price_range.trim() || null,
+      rating: normalizePlaceRating(placeForm.rating),
+      price_range: null,
       parking_available: placeForm.parking_available,
-      revisit_intent: placeForm.revisit_intent.trim() || null,
+      revisit_intent: placeForm.revisit_intent === "impossible" ? "impossible" : "possible",
       tags: placeForm.tags.trim() || null,
       memo: placeForm.memo.trim() || null
     });
     if (error) return showNotice({ type: "error", text: error.message });
-    setPlaceForm({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", price_range: "", parking_available: false, revisit_intent: "", tags: "", memo: "" });
+    setPlaceForm({ name: "", place_type: "restaurant", visit_date: today(), address: "", google_maps_url: "", rating: "5", parking_available: false, revisit_intent: "possible", tags: "", memo: "" });
     await fetchGroupData(selectedGroupId);
   };
 
-  const editPlaceRecord = async (place: PlaceRecord) => {
-    if (!supabase || !selectedGroupId || !requireEdit()) return;
-    const name = window.prompt("장소명을 수정하세요.", place.name ?? "");
-    if (name === null) return;
-    if (!name.trim()) return showNotice({ type: "error", text: "장소명은 비울 수 없습니다." });
-    const typeText = window.prompt("구분을 수정하세요. 맛집/카페/가본곳/가고싶은곳 중 하나를 입력하세요.", place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳");
-    if (typeText === null) return;
-    const typeMap: Record<string, string> = { "맛집": "restaurant", "restaurant": "restaurant", "카페": "cafe", "cafe": "cafe", "가본곳": "visited", "visited": "visited", "가고싶은곳": "wishlist", "wishlist": "wishlist" };
-    const nextType = typeMap[typeText.trim()] ?? place.place_type;
-    const visitDate = window.prompt("방문일을 수정하세요. 비우면 날짜 없음으로 저장됩니다.", place.visit_date ?? "");
-    if (visitDate === null) return;
-    const address = window.prompt("주소 또는 지역을 수정하세요. 비우면 삭제됩니다.", place.address ?? "");
-    if (address === null) return;
-    const url = window.prompt("Google 지도 링크를 수정하세요. 비우면 검색 링크로 대체됩니다.", place.google_maps_url ?? "");
-    if (url === null) return;
-    const rating = window.prompt("평점을 수정하세요. 0~5 사이 숫자입니다.", String(place.rating ?? 0));
-    if (rating === null) return;
-    const priceRange = window.prompt("가격대를 수정하세요. 예: 1만원대, 2~3만원대 / 비우면 삭제", place.price_range ?? "");
-    if (priceRange === null) return;
-    const parkingInput = window.prompt("주차 가능 여부를 입력하세요. 가능/불가/비움", place.parking_available ? "가능" : "");
-    if (parkingInput === null) return;
-    const revisitIntent = window.prompt("재방문 의사를 수정하세요. 예: 재방문, 보류, 비추천", place.revisit_intent ?? "");
-    if (revisitIntent === null) return;
-    const tags = window.prompt("태그를 수정하세요. 예: 데이트, 조용함, 주차좋음", place.tags ?? "");
-    if (tags === null) return;
-    const memo = window.prompt("장소 메모를 수정하세요. 비우면 삭제됩니다.", place.memo ?? "");
-    if (memo === null) return;
+  const editPlaceRecord = (place: PlaceRecord) => {
+    if (!requireEdit()) return;
+    setPlaceEdit({
+      item: place,
+      name: place.name ?? "",
+      place_type: place.place_type ?? "restaurant",
+      visit_date: place.visit_date ?? "",
+      address: place.address ?? "",
+      google_maps_url: place.google_maps_url ?? "",
+      rating: String(normalizePlaceRating(place.rating ?? 0)),
+      parking_available: Boolean(place.parking_available),
+      revisit_intent: place.revisit_intent === "impossible" ? "impossible" : "possible",
+      tags: place.tags ?? "",
+      memo: place.memo ?? ""
+    });
+  };
+
+  const submitPlaceEdit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !selectedGroupId || !placeEdit || !requireEdit()) return;
+    if (!placeEdit.name.trim()) return showNotice({ type: "error", text: "장소명은 비울 수 없습니다." });
     const { error } = await supabase.from("place_records").update({
-      name: limitText(name.trim(), FIELD_LIMITS.placeName),
-      place_type: nextType,
-      visit_date: visitDate.trim() || null,
-      address: address.trim() ? limitText(address.trim(), FIELD_LIMITS.placeAddress) : null,
-      google_maps_url: url.trim() ? limitText(url.trim(), FIELD_LIMITS.placeUrl) : null,
-      rating: Math.max(0, Math.min(5, asNumber(rating))),
-      price_range: priceRange.trim() || null,
-      parking_available: parkingInput.trim() === "가능" || parkingInput.trim().toLowerCase() === "yes" || parkingInput.trim().toLowerCase() === "y",
-      revisit_intent: revisitIntent.trim() || null,
-      tags: tags.trim() || null,
-      memo: memo.trim() ? limitText(memo.trim(), FIELD_LIMITS.placeMemo) : null
-    }).eq("id", place.id);
+      name: limitText(placeEdit.name.trim(), FIELD_LIMITS.placeName),
+      place_type: placeEdit.place_type,
+      visit_date: placeEdit.visit_date || null,
+      address: placeEdit.address.trim() ? limitText(placeEdit.address.trim(), FIELD_LIMITS.placeAddress) : null,
+      google_maps_url: placeEdit.google_maps_url.trim() ? limitText(placeEdit.google_maps_url.trim(), FIELD_LIMITS.placeUrl) : null,
+      rating: normalizePlaceRating(placeEdit.rating),
+      price_range: null,
+      parking_available: placeEdit.parking_available,
+      revisit_intent: placeEdit.revisit_intent === "impossible" ? "impossible" : "possible",
+      tags: placeEdit.tags.trim() || null,
+      memo: placeEdit.memo.trim() ? limitText(placeEdit.memo.trim(), FIELD_LIMITS.placeMemo) : null
+    }).eq("id", placeEdit.item.id);
     if (error) return showNotice({ type: "error", text: error.message });
+    setPlaceEdit(null);
     await fetchGroupData(selectedGroupId);
     showNotice({ type: "success", text: "장소 기록을 수정했습니다." });
   };
@@ -1966,6 +1992,40 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
     showNotice({ type: "success", text: "이번 달 정산 기록을 생성했습니다." });
   };
 
+  const creditCardAccounts = useMemo(() => accounts.filter((account) => account.account_type === "credit_card"), [accounts]);
+  const creditCardMonthRows = useMemo(() => {
+    return creditCardAccounts.map((account) => {
+      const monthSpending = visibleTransactions
+        .filter((item) => item.account_id === account.id && transactionIsExpense(item) && isInMonth(item.transaction_date, selectedMonth))
+        .reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const settledAmount = creditCardSettlements
+        .filter((item) => item.account_id === account.id && item.settlement_month === monthStart(selectedMonth))
+        .reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const remaining = Math.max(0, monthSpending - settledAmount);
+      return { account, monthSpending, settledAmount, remaining };
+    });
+  }, [creditCardAccounts, visibleTransactions, creditCardSettlements, selectedMonth]);
+
+  const settleCreditCardMonth = async (accountId: string) => {
+    if (!supabase || !selectedGroupId || !requireEdit()) return;
+    const row = creditCardMonthRows.find((item) => item.account.id === accountId);
+    if (!row) return showNotice({ type: "error", text: "신용카드 계좌를 찾을 수 없습니다." });
+    if (row.remaining <= 0) return showNotice({ type: "info", text: "이번 달에 추가 정산할 신용카드 사용액이 없습니다." });
+    if (!window.confirm(`${selectedMonth} ${row.account.name} 사용액 ${currency(row.remaining)}을 정산 처리할까요?\n계좌 잔액의 마이너스 표시에서 해당 금액을 제거합니다.`)) return;
+    const balanceError = await adjustAccountBalance(row.account.id, row.remaining);
+    if (balanceError) return showNotice({ type: "error", text: balanceError });
+    const existing = creditCardSettlements.find((item) => item.account_id === accountId && item.settlement_month === monthStart(selectedMonth));
+    if (existing) {
+      const { error } = await supabase.from("credit_card_settlements").update({ amount: moneyNumber(existing.amount) + row.remaining, memo: `${selectedMonth} 신용카드 추가 정산` }).eq("id", existing.id);
+      if (error) return showNotice({ type: "error", text: error.message });
+    } else {
+      const { error } = await supabase.from("credit_card_settlements").insert({ group_id: selectedGroupId, account_id: accountId, settlement_month: monthStart(selectedMonth), amount: row.remaining, settled_by: currentUserId, memo: `${selectedMonth} 신용카드 월 정산` });
+      if (error) return showNotice({ type: "error", text: error.message });
+    }
+    await fetchGroupData(selectedGroupId);
+    showNotice({ type: "success", text: `${row.account.name} ${selectedMonth} 신용카드 정산을 반영했습니다.` });
+  };
+
 
   const buildBackupPayload = (): BackupPayload => ({
     app: "Together Life",
@@ -1988,6 +2048,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
       diary_entries: diaryEntries,
       diary_photos: diaryPhotos,
       settlement_records: settlementRecords,
+      credit_card_settlements: creditCardSettlements,
       vehicles,
       vehicle_maintenance_items: vehicleMaintenanceItems,
       place_records: placeRecords
@@ -2322,7 +2383,7 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <select value={fixedForm.category_id} onChange={(event) => setFixedForm({ ...fixedForm, category_id: event.target.value })} disabled={!canEdit}><option value="">카테고리</option>{categories.filter((category) => category.type === "expense").map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <label className="check-line"><input type="checkbox" checked={fixedForm.repeat_enabled} onChange={(event) => setFixedForm({ ...fixedForm, repeat_enabled: event.target.checked, repeat_type: event.target.checked ? "monthly" : "none" })} disabled={!canEdit} /> 반복 사용</label>
                   {fixedForm.repeat_enabled && <div className="form-row"><select value={fixedForm.repeat_type} onChange={(event) => setFixedForm({ ...fixedForm, repeat_type: event.target.value })} disabled={!canEdit}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="yearly">매년</option></select><input type="date" value={fixedForm.repeat_until} onChange={(event) => setFixedForm({ ...fixedForm, repeat_until: event.target.value })} disabled={!canEdit} title="반복 종료일" /></div>}
-                  {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다.</p>}
+                  {fixedForm.repeat_enabled && <p className="field-help">종료일을 비워두면 계속 반복됩니다. 고정비는 저장한 달부터 이번 달 요약에 바로 반영됩니다.</p>}
                   <button disabled={!canEdit}>고정비 저장</button>
                 </form>
                 <p className="muted small gap-top">고정비 목록 {visibleFixedExpenses.length}건 · 아래 목록은 스크롤로 전체 확인/수정할 수 있습니다.</p>
@@ -2684,8 +2745,8 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 <div className="form-row"><select value={placeForm.place_type} onChange={(event) => setPlaceForm({ ...placeForm, place_type: event.target.value })} disabled={!canEdit}><option value="restaurant">맛집</option><option value="cafe">카페</option><option value="visited">가본곳</option><option value="wishlist">가고싶은곳</option></select><input type="date" value={placeForm.visit_date} onChange={(event) => setPlaceForm({ ...placeForm, visit_date: event.target.value })} disabled={!canEdit} /></div>
                 <input value={placeForm.address} onChange={(event) => setPlaceForm({ ...placeForm, address: limitText(event.target.value, FIELD_LIMITS.placeAddress) })} placeholder="주소 또는 지역" maxLength={FIELD_LIMITS.placeAddress} disabled={!canEdit} />
                 <input value={placeForm.google_maps_url} onChange={(event) => setPlaceForm({ ...placeForm, google_maps_url: limitText(event.target.value, FIELD_LIMITS.placeUrl) })} placeholder="Google 지도 공유 링크 선택 입력" maxLength={FIELD_LIMITS.placeUrl} disabled={!canEdit} />
-                <div className="form-row"><input value={placeForm.rating} onChange={(event) => setPlaceForm({ ...placeForm, rating: event.target.value.replace(/[^0-5]/g, "").slice(0, 1) })} placeholder="평점 0~5" disabled={!canEdit} /><input value={placeForm.price_range} onChange={(event) => setPlaceForm({ ...placeForm, price_range: limitText(event.target.value, 30) })} placeholder="가격대 예: 1만원대" disabled={!canEdit} /></div>
-                <div className="form-row"><select value={placeForm.parking_available ? "yes" : "no"} onChange={(event) => setPlaceForm({ ...placeForm, parking_available: event.target.value === "yes" })} disabled={!canEdit}><option value="no">주차 정보 없음/불가</option><option value="yes">주차 가능</option></select><input value={placeForm.revisit_intent} onChange={(event) => setPlaceForm({ ...placeForm, revisit_intent: limitText(event.target.value, 30) })} placeholder="재방문 의사" disabled={!canEdit} /></div>
+                <div className="rating-field"><span>평점</span><div className="rating-buttons">{placeRatingOptions.map((option) => <button type="button" key={option} className={`rating-button ${normalizePlaceRating(placeForm.rating) === option ? "active" : ""}`} onClick={() => setPlaceForm({ ...placeForm, rating: String(option) })} disabled={!canEdit}>{placeRatingLabel(option)}</button>)}</div></div>
+                <div className="form-row"><select value={placeForm.parking_available ? "yes" : "no"} onChange={(event) => setPlaceForm({ ...placeForm, parking_available: event.target.value === "yes" })} disabled={!canEdit}><option value="no">주차 정보 없음/불가</option><option value="yes">주차 가능</option></select><select value={placeForm.revisit_intent} onChange={(event) => setPlaceForm({ ...placeForm, revisit_intent: event.target.value })} disabled={!canEdit}><option value="possible">재방문 가능</option><option value="impossible">재방문 불가능</option></select></div>
                 <input value={placeForm.tags} onChange={(event) => setPlaceForm({ ...placeForm, tags: limitText(event.target.value, FIELD_LIMITS.placeTags) })} placeholder="태그 예: 데이트, 조용함, 주차좋음" maxLength={FIELD_LIMITS.placeTags} disabled={!canEdit} />
                 <textarea value={placeForm.memo} onChange={(event) => setPlaceForm({ ...placeForm, memo: limitText(event.target.value, FIELD_LIMITS.placeMemo) })} placeholder="메뉴, 분위기, 주차, 재방문의사" maxLength={FIELD_LIMITS.placeMemo} disabled={!canEdit} />
                 <button disabled={!canEdit}>장소 저장</button>
@@ -2697,9 +2758,9 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                 {placeRecords.length === 0 && <p className="muted">아직 저장된 장소가 없습니다.</p>}
                 {placeRecords.map((place) => (
                   <article className="place-item" key={place.id}>
-                    <div className="between"><strong>{place.name}</strong><span>{place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳"} · ★{place.rating ?? 0}</span></div>
+                    <div className="between"><strong>{place.name}</strong><span>{place.place_type === "restaurant" ? "맛집" : place.place_type === "cafe" ? "카페" : place.place_type === "wishlist" ? "가고싶은곳" : "가본곳"} · {placeRatingLabel(place.rating)}</span></div>
                     <p className="muted small">{place.visit_date || "날짜 없음"} · {place.address || "주소 없음"}</p>
-                    <p className="muted small">가격대 {place.price_range || "미기록"} · {place.parking_available ? "주차 가능" : "주차 미확인"} · 재방문 {place.revisit_intent || "미기록"}</p>
+                    <p className="muted small">{place.parking_available ? "주차 가능" : "주차 미확인"} · 재방문 {revisitIntentLabel(place.revisit_intent)}</p>
                     {place.tags && <div className="chip-list">{place.tags.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => <span className="chip" key={tag}>{tag}</span>)}</div>}
                     {place.memo && <p className="line-item">{place.memo}</p>}
                     <div className="inline-actions"><a className="map-link" href={mapsUrlForPlace(place)} target="_blank" rel="noreferrer">Google 지도 열기</a><button className="text-button" onClick={() => editPlaceRecord(place)} disabled={!canEdit}>수정</button><button className="text-button danger-text" onClick={() => removeRow("place_records", place.id)} disabled={!canEdit}>삭제</button></div>
@@ -2905,7 +2966,12 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
                   <div className="form-row"><select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })} disabled={!canAdmin}><option value="bank">입출금</option><option value="cash">현금</option><option value="credit_card">신용카드</option><option value="saving">저축</option></select><input value={accountForm.balance} onChange={(event) => setAccountForm({ ...accountForm, balance: formatMoneyInput(event.target.value) })} placeholder="잔액" maxLength={FIELD_LIMITS.money} disabled={!canAdmin} /></div>
                   <button className="secondary" disabled={!canAdmin}>계좌 추가</button>
                 </form>
-                <List compact>{accounts.length === 0 && <li><span>등록된 계좌가 없습니다.</span></li>}{accounts.map((account) => <li key={account.id}><span>{account.name} · {currency(account.balance)}</span><div className="inline-actions"><button className="text-button" onClick={() => editAccount(account)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <List compact>{accounts.length === 0 && <li><span>등록된 계좌가 없습니다.</span></li>}{accounts.map((account) => <li key={account.id}><span>{account.name} · {account.account_type === "credit_card" ? "신용카드 · " : ""}{currency(account.balance)}</span><div className="inline-actions"><button className="text-button" onClick={() => editAccount(account)} disabled={!canAdmin}>수정</button><button className="text-button danger-text" onClick={() => removeRow("accounts", account.id, true)} disabled={!canAdmin}>삭제</button></div></li>)}</List>
+                <div className="mini-section gap-top">
+                  <h4>신용카드 월 정산</h4>
+                  <p className="muted small">계좌 유형이 신용카드인 계좌만 표시됩니다. {selectedMonth} 1일부터 말일까지의 지출 중 아직 정산하지 않은 금액을 계좌 마이너스 잔액에서 제거합니다.</p>
+                  <List compact>{creditCardMonthRows.length === 0 && <li><span>신용카드 계좌가 없습니다.</span></li>}{creditCardMonthRows.map((row) => <li key={row.account.id}><span>{row.account.name} · 이번 달 사용 {currency(row.monthSpending)} · 정산완료 {currency(row.settledAmount)} · 남은 정산 {currency(row.remaining)}</span><div className="inline-actions"><button className="text-button" onClick={() => settleCreditCardMonth(row.account.id)} disabled={!canEdit || row.remaining <= 0}>정산 처리</button></div></li>)}</List>
+                </div>
               </section>
               <section className="mini-section">
                 <h4>카테고리</h4>
@@ -2964,6 +3030,23 @@ ${accountLines || "등록된 계좌가 없습니다."}`,
               <select value={eventEdit.assigned_to_member_id} onChange={(event) => setEventEdit({ ...eventEdit, assigned_to_member_id: event.target.value })}><option value="">담당자</option>{members.map((member) => <option key={member.id} value={member.id}>{member.display_name}</option>)}</select>
               <textarea value={eventEdit.memo} onChange={(event) => setEventEdit({ ...eventEdit, memo: limitText(event.target.value, FIELD_LIMITS.eventMemo) })} placeholder="메모" maxLength={FIELD_LIMITS.eventMemo} />
               <label className="check-line"><input type="checkbox" checked={eventEdit.is_important} onChange={(event) => setEventEdit({ ...eventEdit, is_important: event.target.checked })} /> 중요 일정</label>
+              <button>수정 저장</button>
+            </form>
+          </div>
+        )}
+
+        {placeEdit && (
+          <div className="modal-backdrop">
+            <form className="modal-card stack-form" onSubmit={submitPlaceEdit}>
+              <div className="between"><h3>장소 기록 수정</h3><button type="button" className="text-button" onClick={() => setPlaceEdit(null)}>닫기</button></div>
+              <input value={placeEdit.name} onChange={(event) => setPlaceEdit({ ...placeEdit, name: limitText(event.target.value, FIELD_LIMITS.placeName) })} placeholder="장소명" maxLength={FIELD_LIMITS.placeName} />
+              <div className="form-row"><select value={placeEdit.place_type} onChange={(event) => setPlaceEdit({ ...placeEdit, place_type: event.target.value })}><option value="restaurant">맛집</option><option value="cafe">카페</option><option value="visited">가본곳</option><option value="wishlist">가고싶은곳</option></select><input type="date" value={placeEdit.visit_date} onChange={(event) => setPlaceEdit({ ...placeEdit, visit_date: event.target.value })} /></div>
+              <input value={placeEdit.address} onChange={(event) => setPlaceEdit({ ...placeEdit, address: limitText(event.target.value, FIELD_LIMITS.placeAddress) })} placeholder="주소 또는 지역" maxLength={FIELD_LIMITS.placeAddress} />
+              <input value={placeEdit.google_maps_url} onChange={(event) => setPlaceEdit({ ...placeEdit, google_maps_url: limitText(event.target.value, FIELD_LIMITS.placeUrl) })} placeholder="Google 지도 공유 링크 선택 입력" maxLength={FIELD_LIMITS.placeUrl} />
+              <div className="rating-field"><span>평점</span><div className="rating-buttons">{placeRatingOptions.map((option) => <button type="button" key={option} className={`rating-button ${normalizePlaceRating(placeEdit.rating) === option ? "active" : ""}`} onClick={() => setPlaceEdit({ ...placeEdit, rating: String(option) })}>{placeRatingLabel(option)}</button>)}</div></div>
+              <div className="form-row"><select value={placeEdit.parking_available ? "yes" : "no"} onChange={(event) => setPlaceEdit({ ...placeEdit, parking_available: event.target.value === "yes" })}><option value="no">주차 정보 없음/불가</option><option value="yes">주차 가능</option></select><select value={placeEdit.revisit_intent} onChange={(event) => setPlaceEdit({ ...placeEdit, revisit_intent: event.target.value })}><option value="possible">재방문 가능</option><option value="impossible">재방문 불가능</option></select></div>
+              <input value={placeEdit.tags} onChange={(event) => setPlaceEdit({ ...placeEdit, tags: limitText(event.target.value, FIELD_LIMITS.placeTags) })} placeholder="태그 예: 데이트, 조용함, 주차좋음" maxLength={FIELD_LIMITS.placeTags} />
+              <textarea value={placeEdit.memo} onChange={(event) => setPlaceEdit({ ...placeEdit, memo: limitText(event.target.value, FIELD_LIMITS.placeMemo) })} placeholder="메뉴, 분위기, 주차 메모" maxLength={FIELD_LIMITS.placeMemo} />
               <button>수정 저장</button>
             </form>
           </div>
